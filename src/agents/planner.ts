@@ -161,12 +161,14 @@ export async function assemble(state: CaseState): Promise<RunResponse> {
   if (state.sources.prices === "sample") confidence -= 0.1;
   confidence = roundTo(Math.max(0.05, Math.min(0.95, confidence)));
   const holdDays = ev.best === "hold" ? days : null;
+  const penaltyNote = describeLiquidityPenalty(ev);
   const summary = [
     `Rounds ${state.round}, revisions ${state.revision_counts.total}, refreshes ${state.refresh_counts.total}.`,
-    `Computed value sell ${kes(ev.sellEv)}, hold ${kes(ev.holdEv)}, split ${kes(ev.splitEv)} KES. Higher value: ${ev.best}.`,
+    `Computed scored value sell ${kes(ev.sellEv)}, hold ${kes(ev.holdEv)}, split ${kes(ev.splitEv)} KES. Higher scored value: ${ev.best}.`,
+    penaltyNote,
     market.statement,
     storage.statement,
-  ].join(" ");
+  ].filter((part): part is string => Boolean(part)).join(" ");
   const reply = await phrase(
     state,
     "Planner",
@@ -176,12 +178,12 @@ export async function assemble(state: CaseState): Promise<RunResponse> {
   const response: RunResponse = {
     verdict: ev.best,
     hold_days: holdDays,
-    price_range_per_90kg_bag: { p10: roundTo(stats.p10), p50: roundTo(stats.p50), p90: roundTo(stats.p90) },
+    price_range_per_90kg_bag: publishedPriceRange(ev.best, { p10: roundTo(stats.p10), p50: roundTo(stats.p50), p90: roundTo(stats.p90) }),
     confidence,
     evidence: [...market.evidence, ...storage.evidence],
     reasoning_trace_summary: summary.slice(0, 1200),
     what_would_change_this_advice: changes,
-    limitations: limitationsFor(state),
+    limitations: penaltyNote ? [...limitationsFor(state), penaltyNote] : limitationsFor(state),
     recheck_schedule: `Recheck on ${addDays(state.today, ev.best === "hold" ? 3 : 7)} or sooner if the forecast or the buyer offer changes.`,
     plain_reply: reply,
     trace_id: state.trace_id,
@@ -191,7 +193,7 @@ export async function assemble(state: CaseState): Promise<RunResponse> {
   traceEvent({
     action: "assemble",
     input_summary: state.question,
-    output_summary: `verdict=${ev.best} confidence=${confidence}`,
+    output_summary: `verdict=${ev.best} confidence=${confidence} cash_need=${base.cashNeed} penalty_rate=${ev.penaltyRate} hold_gross=${Math.round(ev.holdGross)} hold_penalty=${Math.round(ev.holdPenalty)} scored_hold=${Math.round(ev.holdEv)} sell_penalty=${Math.round(ev.sellPenalty)} split_penalty=${Math.round(ev.splitPenalty)}`,
     target_agent: state.request.mode === "recheck" ? "Watcher" : null,
     confidence,
     retry_count: state.revision_counts.total,
@@ -232,10 +234,33 @@ function twoSentenceReply(state: CaseState, ev: EvResult, stats: PriceStats, los
   const bags = state.request.bags;
   const county = state.request.county;
   const first = `For ${bags} bags in ${county}, the higher computed value is ${ev.best} at about ${kes(valueOf(ev, ev.best))} KES, inside a recent band of ${kes(stats.p10)} to ${kes(stats.p90)} KES per 90 kg bag.`;
-  const second = ev.best === "hold"
-    ? `Expected storage loss over ${holdDays ?? stats.n} days is ${pct(lossMean)}, so the case for holding is the price path after that loss.`
-    : `Expected storage loss over the forecast is ${pct(lossMean)}, which is already in that comparison.`;
+  const second = ev.holdPenalty > 0
+    ? `The hold grain value is ${kes(ev.holdGross)} KES before a ${kes(ev.holdPenalty)} KES cash-need penalty, so the scored hold value is ${kes(ev.holdEv)} KES.`
+    : ev.best === "hold"
+      ? `Expected storage loss over ${holdDays ?? stats.n} days is ${pct(lossMean)}, so the case for holding is the price path after that loss.`
+      : `Expected storage loss over the forecast is ${pct(lossMean)}, which is already in that comparison.`;
   return `${first} ${second}`;
+}
+
+export function publishedPriceRange<T>(verdict: string, range: T | null): T | null {
+  return verdict === "no_recommendation" ? null : range;
+}
+
+export function dedupeSentences(text: string): string {
+  const parts = text.split(/(?<=[.!?])\s+/).map((part) => part.trim()).filter(Boolean);
+  const seen = new Set<string>();
+  const kept: string[] = [];
+  for (const part of parts) {
+    const key = part.replace(/\s+/g, " ").toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    kept.push(part.replace(/\s+/g, " "));
+  }
+  return kept.join(" ");
+}
+
+export function noRecommendationSummary(coverageNote: string, reason: string): string {
+  return dedupeSentences(`${coverageNote} ${reason}`.trim());
 }
 
 async function phrase(state: CaseState, agent: string, fallback: string, verdict: string | null): Promise<string> {
@@ -244,7 +269,13 @@ async function phrase(state: CaseState, agent: string, fallback: string, verdict
     system: "Write exactly two sentences for a Kenyan maize farmer. Decision support, not financial advice. Do not change the action in the user message. No markdown.",
     user: fallback,
   });
-  if (result.fallback || !isTwoSentences(result.text) || (verdict && !result.text.toLowerCase().includes(verdict))) {
+  const needsPenalty = fallback.toLowerCase().includes("cash-need penalty");
+  if (
+    result.fallback
+    || !isTwoSentences(result.text)
+    || (verdict && !result.text.toLowerCase().includes(verdict))
+    || (needsPenalty && !result.text.toLowerCase().includes("penalty"))
+  ) {
     if (result.fallback) state.narrative_fallback = true;
     if (isTwoSentences(fallback)) return fallback.trim();
     return ensureTwo(fallback, "This is decision support, not a promise of the price you will receive.");
@@ -287,22 +318,6 @@ function evidenceFrom(state: CaseState): RunResponse["evidence"] {
   const market = latestClaim(state, "MarketAnalyst");
   const storage = latestClaim(state, "StorageWeatherAnalyst");
   return [...(market?.evidence ?? []), ...(storage?.evidence ?? [])];
-}
-
-async function observedRange(state: CaseState): Promise<RunResponse["price_range_per_90kg_bag"]> {
-  if (state.sources.prices !== "sample" && state.sources.prices !== "zetaris") return null;
-  const prices = await readPrices(state.request.county);
-  const fresh = prices.value.filter((row) => isWhiteMaizeBag(row)).filter((row) => {
-    const age = daysBetween(row.market_date, state.today);
-    return Number.isFinite(age) && age >= 0 && age <= FRESH_DAYS;
-  });
-  if (fresh.length === 0) return null;
-  try {
-    const stats = cleanAndSummarize(fresh.map((row) => ({ date: row.market_date, price: row.wholesale_price_kes })));
-    return { p10: roundTo(stats.p10), p50: roundTo(stats.p50), p90: roundTo(stats.p90) };
-  } catch {
-    return null;
-  }
 }
 
 function statsFrom(payload: Record<string, unknown>): PriceStats | null {

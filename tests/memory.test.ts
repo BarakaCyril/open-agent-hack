@@ -1,5 +1,9 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { getMemory, resetMemoryForTests } from "../src/adapters/memory.js";
+import { HMEM } from "../src/hmem/index.js";
 import { rememberOutcome } from "../src/agents/planner.js";
 import { describeRecheck, loadPrior } from "../src/agents/watcher.js";
 import { createInitialState } from "../src/orchestration/state.js";
@@ -109,5 +113,15 @@ describe("H-MEM farmer history", () => {
     expect(verdicts).toHaveLength(2);
     expect(verdicts[1]?.payload.verdict).toBe("sell");
     expect(verdicts[0]?.payload.verdict).toBe("hold");
+  });
+
+  it("starts with no records when the persist directory is missing", () => {
+    const dir = path.join(os.tmpdir(), `hmem-fresh-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    expect(fs.existsSync(dir)).toBe(false);
+    const hmem = new HMEM({ persistDir: dir, actor: "open-agent-maize" });
+    expect(hmem.store.all()).toEqual([]);
+    fs.rmSync(dir, { recursive: true, force: true });
+    const gitignore = fs.readFileSync(path.join(process.cwd(), ".gitignore"), "utf8");
+    expect(gitignore).toMatch(/^data\/hmem\/$/m);
   });
 });

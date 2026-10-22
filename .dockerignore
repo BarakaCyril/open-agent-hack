@@ -4,5 +4,6 @@ logs
 .git
 .env
 memory
+data/hmem
 **/*.md
 !data/README.md
