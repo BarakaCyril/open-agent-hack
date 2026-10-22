@@ -60,6 +60,44 @@ Smoke check (prints PASS or FAIL, and does not print secrets):
 npx tsx scripts/smoke_test.ts
 ```
 
+Count the rows in each `maize` table (prints the count, or FAIL):
+
+```bash
+npx tsx scripts/check_zetaris_tables.ts
+```
+
+## Zetaris data setup
+
+The agents read schema-store views, not the raw files:
+
+| View | Columns the adapter selects |
+| --- | --- |
+| `maize.kamis_prices` | `market_date`, `county`, `market_name`, `commodity`, `variety`, `grade`, `unit_kg`, `wholesale_price_kes`, `retail_price_kes`, `volume_bags` |
+| `maize.weather_daily` | `county`, `as_of`, `source`, `forecast_date`, `rain_mm`, `humidity_pct`, `temp_c` |
+| `maize.market_news` | `id`, `as_of`, `county`, `maize_type`, `status`, `direction`, `headline`, `commodity` |
+| `maize.storage_loss_rules` | `storage`, `rain_mm_min`, `humidity_min`, `daily_loss_pct` |
+| `maize.farmer_ledger` | `farmer_id`, `county`, `as_of`, `record_type`, `verdict`, `hold_days`, `bags`, `storage`, `forecast_rain_mm_7d`, `notes` |
+
+Those views sit in the schema-store container `maize`. The files behind them are Lightning tables in database `MAIZE_FILES`, stored on the Zetaris host:
+
+| Host file | Lightning table |
+| --- | --- |
+| `/home/zetaris/customer-data/shared/maize/kamis_dry_maize.csv` | `MAIZE_FILES.kamis_prices_raw` |
+| `/home/zetaris/customer-data/shared/maize/weather.json` | `MAIZE_FILES.weather_raw` |
+| `/home/zetaris/customer-data/shared/maize/news.json` | `MAIZE_FILES.market_news_raw` |
+| `/home/zetaris/customer-data/shared/maize/storage_loss_rules.csv` | `MAIZE_FILES.storage_loss_rules_raw` |
+| `/home/zetaris/customer-data/shared/maize/farmer_ledger.json` | `MAIZE_FILES.farmer_ledger_raw` |
+
+`weather_daily` explodes `series` and each series `days`. `market_news` explodes `items`. `farmer_ledger` explodes `entries`. `storage_loss_rules` keeps the four numeric columns and leaves out `synthetic` and `note`.
+
+A clean clone has `data/sample/` and does not create the remote schema by itself. To reload:
+
+1. Copy the five files from `data/sample/` onto the host paths above, keeping those file names.
+2. If `MAIZE_FILES` and the `maize` views are already registered, stop there. The filestore reads those paths on each query. Run `npx tsx scripts/check_zetaris_tables.ts` and confirm each table returns a count.
+3. If the organisation has no `maize` container, open `scripts/zetaris_maize_setup.sql` and run each statement on its own in the Zetaris SQL editor. `CREATE LIGHTNING DATABASE` and `CREATE SCHEMASTORE CONTAINER` fail when the name already exists; skip those. Then run the count script.
+
+Do not point `ZETARIS_REST_URL` at port 8889.
+
 ## Usage
 
 ```bash
@@ -81,13 +119,13 @@ curl -s -X POST http://localhost:8000/run \
 
 ## Sample mode
 
-`SAMPLE_MODE=true` loads input rows from `data/sample/` only after a live Zetaris call fails or times out. It does not load a verdict. `SAMPLE_MODE=false` returns the source error instead of substituting the sample files. A timeout retries once with a narrower SELECT, then follows that same rule.
+`SAMPLE_MODE=true` loads input rows from `data/sample/` only after a live Zetaris call fails or times out. It does not load a verdict. The response field `data_source` is `zetaris` when every read hit `maize.<table>`, `sample` when every read used a file, and `mixed` when both happened. Evidence is `zetaris:<table>` or `sample:<file>`. A fallback is also a trace line with status `fallback`, and the closing trace line repeats `data_source`. `SAMPLE_MODE=false` returns the source error instead of substituting the sample files. A timeout retries once with a narrower SELECT, then follows that same rule. Identical SQL inside one run is cached and traced as `cache`.
 
 ## Failure handling
 
 | Failure | What the run does |
 | --- | --- |
-| Zetaris timeout | One narrower SQL retry, then sample input if `SAMPLE_MODE=true`. Trace status `fallback`. |
+| Zetaris timeout | One narrower SQL retry, then sample input if `SAMPLE_MODE=true`. Trace status `fallback`. Response `data_source` is `sample` or `mixed`. |
 | Zetaris HTTP 5xx or network error | Up to `MAX_RETRIES` with backoff, then the same sample rule. 4xx is not retried. |
 | Zetaris down and `SAMPLE_MODE=false` | The request fails with the scrubbed source error. No invented rows. |
 | Meterless 401 or 403 | Reported as unauthorized. The chat call surfaces the server message and does not treat it as offline. |
@@ -112,7 +150,7 @@ See `data/README.md`. The KAMIS-style price file has 51 data rows and was alread
 - Loss percentages come from synthetic rules, not measured spoilage on this farm.
 - The price window is short, and several counties have only a handful of quotes.
 - Farmer memory persists under `data/hmem` (gitignored). A record with an empty source is rejected.
-- Zetaris table names in the adapter (`kamis_prices`, `weather_daily`, `storage_loss_rules`, `market_news`, `farmer_ledger`) are the contract this code sends. They may need a catalog mapping before a live virtual database returns rows.
+- Live reads use `maize.kamis_prices`, `maize.weather_daily`, `maize.market_news`, `maize.storage_loss_rules`, and `maize.farmer_ledger`. A fresh clone still needs the one-time load in `scripts/zetaris_maize_setup.sql` before those views exist.
 - Model text cannot change the computed verdict. If it does not match, the reply stays with the numbers.
 
 ## Pre-existing components
@@ -123,7 +161,7 @@ See `data/README.md`. The KAMIS-style price file has 51 data rows and was alread
 
 ## Sponsor technology
 
-- **Zetaris.** SQL reads go through `src/adapters/zetaris.ts`: `POST {ZETARIS_REST_URL}/sql-editor/sqls/run` with `Authorization`, `X-Org-ID`, and a fresh `X-Request-ID`. One statement per call. Rows are read from `response.data`. Agents call the typed helpers, not ad-hoc SQL.
+- **Zetaris.** SQL reads go through `src/adapters/zetaris.ts`: `POST {ZETARIS_REST_URL}/sql-editor/sqls/run` with `Authorization`, `X-Org-ID`, and a fresh `X-Request-ID`. One statement per call. The body returns `headers` plus row arrays in `data`; the adapter zips them into named columns. Agents call the typed helpers, which select from `maize.<table>`.
 - **Meterless.** OpenAI-compatible chat in `src/adapters/meterless.ts`. The base URL is normalised to a single `/v1`. Health is `GET /v1/models` (`online` only when the payload contains meterless ids; 401/403 is `unauthorized`; `/healthz` is not used). Chat sends `meterless-app: open-agent-maize` and `meterless-scope: user`.
 - **NVIDIA via Nightshift lanes.** Meterless is the runtime in front of those lanes. TODO: record the assigned lane names and GPU placement once they are confirmed for this project.
 - **Cursor.** Used to scaffold and edit this repository.
@@ -133,6 +171,6 @@ See `data/README.md`. The KAMIS-style price file has 51 data rows and was alread
 
 Each run writes `logs/<trace_id>.jsonl`, one JSON object per line:
 
-`timestamp`, `trace_id`, `agent_name`, `action`, `input_summary`, `output_summary`, `target_agent`, `confidence`, `retry_count`, `status`.
+`timestamp`, `trace_id`, `agent_name`, `action`, `input_summary`, `output_summary`, `target_agent`, `confidence`, `retry_count`, `status`, `data_source`.
 
-Status is one of `success`, `needs_revision`, `retrying`, `partial_success`, `fallback`, `error`. The same event is printed as a single stdout line. Secrets are redacted.
+`data_source` on each line is `zetaris`, `mixed`, `sample`, or `null` before any table has been read. The response carries the same field without `null`. Status is one of `success`, `needs_revision`, `retrying`, `partial_success`, `fallback`, `error`. The closing line is `fallback` when any table used a sample file, or when the wording fell back. The same event is printed as a single stdout line. Secrets are redacted.

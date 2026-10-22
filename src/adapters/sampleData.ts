@@ -124,12 +124,19 @@ export function loadLedger(): LedgerEntry[] {
   return parsed.entries ?? [];
 }
 
+export function finiteNumber(value: unknown): number | undefined {
+  if (value === null || value === undefined || value === "") return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 export function mapKamisRow(raw: Record<string, unknown>): KamisRow | null {
   const row: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(raw)) row[key.toLowerCase()] = value;
   const date = String(row.market_date ?? row.date ?? "");
-  const price = Number(row.wholesale_price_kes ?? row.price ?? row.wholesale);
-  if (!date || !Number.isFinite(price)) return null;
+  const price = finiteNumber(row.wholesale_price_kes ?? row.price ?? row.wholesale);
+  const unit = finiteNumber(row.unit_kg);
+  if (!date || date === "null" || price === undefined || unit === undefined) return null;
   return {
     market_date: date.slice(0, 10),
     county: String(row.county ?? ""),
@@ -137,9 +144,9 @@ export function mapKamisRow(raw: Record<string, unknown>): KamisRow | null {
     commodity: String(row.commodity ?? "Dry Maize"),
     variety: String(row.variety ?? ""),
     grade: String(row.grade ?? ""),
-    unit_kg: Number(row.unit_kg ?? 90),
+    unit_kg: unit,
     wholesale_price_kes: price,
-    retail_price_kes: Number(row.retail_price_kes ?? price),
-    volume_bags: Number(row.volume_bags ?? 0),
+    retail_price_kes: finiteNumber(row.retail_price_kes) ?? price,
+    volume_bags: finiteNumber(row.volume_bags) ?? 0,
   };
 }

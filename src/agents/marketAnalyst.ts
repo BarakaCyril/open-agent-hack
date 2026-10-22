@@ -100,12 +100,12 @@ export async function analyzeMarket(state: CaseState): Promise<void> {
     statement: note ? `${statement} Note: ${note}` : statement,
     evidence: [
       {
-        source: prices.via === "zetaris" ? "zetaris:kamis_prices" : "sample:kamis_dry_maize.csv",
+        source: prices.evidenceSource,
         as_of: stats.latestDate,
         freshness: freshnessLabel(stats.latestDate, state.today),
       },
       {
-        source: newsHit.via === "zetaris" ? "zetaris:market_news" : "sample:news.json",
+        source: newsHit.evidenceSource,
         as_of: newestNews ?? state.today,
         freshness: freshnessLabel(newestNews ?? state.today, state.today),
       },

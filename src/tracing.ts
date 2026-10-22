@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { redact } from "./config.js";
+import type { DataSource } from "./schemas.js";
 
 export const TRACE_STATUSES = [
   "success",
@@ -25,6 +26,7 @@ export interface TraceEvent {
   confidence: number | null;
   retry_count: number;
   status: TraceStatus;
+  data_source: DataSource | null;
 }
 
 export interface Tracer {
@@ -36,6 +38,8 @@ export interface Tracer {
 export interface RunContext {
   tracer: Tracer;
   agent: string;
+  queryCache: Map<string, Promise<Record<string, unknown>[]>>;
+  dataSource: () => DataSource | null;
   markSampleFallback: (detail: string) => void;
   markNarrativeFallback: (detail: string) => void;
 }
@@ -66,12 +70,13 @@ export function createTracer(traceId: string, logDir: string): Tracer {
         confidence: partial.confidence,
         retry_count: partial.retry_count,
         status: partial.status,
+        data_source: partial.data_source,
       };
       events.push(event);
       fs.appendFileSync(file, `${JSON.stringify(event)}\n`, "utf8");
       const target = event.target_agent ?? "-";
       console.log(
-        `${event.timestamp} ${event.trace_id} ${event.agent_name} ${event.action} status=${event.status} target=${target} retries=${event.retry_count} ${event.output_summary}`,
+        `${event.timestamp} ${event.trace_id} ${event.agent_name} ${event.action} status=${event.status} data_source=${event.data_source ?? "-"} target=${target} retries=${event.retry_count} ${event.output_summary}`,
       );
     },
   };
@@ -81,11 +86,12 @@ export function currentContext(): RunContext | undefined {
   return runContext.getStore();
 }
 
-export function traceEvent(partial: Omit<TraceEvent, "timestamp" | "trace_id" | "agent_name"> & { agent_name?: string }): void {
+export function traceEvent(partial: Omit<TraceEvent, "timestamp" | "trace_id" | "agent_name" | "data_source"> & { agent_name?: string; data_source?: DataSource | null }): void {
   const ctx = currentContext();
+  const dataSource = partial.data_source !== undefined ? partial.data_source : ctx?.dataSource() ?? null;
   if (!ctx) {
     console.log(
-      `${partial.agent_name ?? "system"} ${partial.action} status=${partial.status} ${summarise(partial.output_summary)}`,
+      `${partial.agent_name ?? "system"} ${partial.action} status=${partial.status} data_source=${dataSource ?? "-"} ${summarise(partial.output_summary)}`,
     );
     return;
   }
@@ -98,6 +104,7 @@ export function traceEvent(partial: Omit<TraceEvent, "timestamp" | "trace_id" | 
     confidence: partial.confidence,
     retry_count: partial.retry_count,
     status: partial.status,
+    data_source: dataSource,
   });
 }
 

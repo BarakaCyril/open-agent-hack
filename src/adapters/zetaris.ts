@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { loadConfig, redact, type AppConfig } from "../config.js";
+import type { DataSource } from "../schemas.js";
 import { currentContext, traceEvent } from "../tracing.js";
 import {
+  finiteNumber,
   loadLedger,
   loadNews,
   loadPriceRows,
@@ -31,6 +33,107 @@ export interface SourceHit<T> {
   value: T;
   via: "zetaris" | "sample";
   synthetic: boolean;
+  evidenceSource: string;
+}
+
+export const MAIZE_TABLES = {
+  prices: {
+    table: "kamis_prices",
+    file: "kamis_dry_maize.csv",
+    columns: "market_date, county, market_name, commodity, variety, grade, unit_kg, wholesale_price_kes, retail_price_kes, volume_bags",
+  },
+  weather: {
+    table: "weather_daily",
+    file: "weather.json",
+    columns: "county, as_of, source, forecast_date, rain_mm, humidity_pct, temp_c",
+  },
+  news: {
+    table: "market_news",
+    file: "news.json",
+    columns: "id, as_of, county, maize_type, status, direction, headline, commodity",
+  },
+  rules: {
+    table: "storage_loss_rules",
+    file: "storage_loss_rules.csv",
+    columns: "storage, rain_mm_min, humidity_min, daily_loss_pct",
+  },
+  ledger: {
+    table: "farmer_ledger",
+    file: "farmer_ledger.json",
+    columns: "farmer_id, county, as_of, record_type, verdict, hold_days, bags, storage, forecast_rain_mm_7d, notes",
+  },
+} as const;
+
+export function maizeFrom(table: string): string {
+  return `maize.${table}`;
+}
+
+export function evidenceLabel(via: "zetaris" | "sample", table: string, file: string): string {
+  return via === "zetaris" ? `zetaris:${table}` : `sample:${file}`;
+}
+
+type SourceFlags = {
+  prices?: "zetaris" | "sample";
+  weather?: "zetaris" | "sample";
+  rules?: "zetaris" | "sample";
+  news?: "zetaris" | "sample";
+  ledger?: "zetaris" | "sample";
+};
+
+export function resolveDataSource(sources: SourceFlags, fallbackCount = 0): DataSource | null {
+  const used = [sources.prices, sources.weather, sources.rules, sources.news, sources.ledger]
+    .filter((value): value is "zetaris" | "sample" => value === "zetaris" || value === "sample");
+  const live = used.includes("zetaris");
+  const sample = used.includes("sample") || fallbackCount > 0;
+  if (used.length === 0 && fallbackCount === 0) return null;
+  if (live && sample) return "mixed";
+  if (sample) return "sample";
+  return "zetaris";
+}
+
+export function rowsFromZetarisBody(body: unknown): Record<string, unknown>[] {
+  if (!body || typeof body !== "object") throw new RemoteSourceError("Zetaris response was not JSON", { retryable: false });
+  const record = body as { data?: unknown; headers?: unknown };
+  const data = record.data;
+  const rows = Array.isArray(data)
+    ? data
+    : data && typeof data === "object" && Array.isArray((data as { rows?: unknown }).rows)
+      ? (data as { rows: unknown[] }).rows
+      : null;
+  if (!rows) throw new RemoteSourceError("Zetaris response has no data array", { retryable: false });
+  const headers = Array.isArray(record.headers) ? record.headers.map((header) => String(header)) : null;
+  return rows.map((row) => {
+    if (Array.isArray(row)) {
+      if (!headers || headers.length === 0) {
+        throw new RemoteSourceError("Zetaris row had no column headers", { retryable: false });
+      }
+      const named: Record<string, unknown> = {};
+      headers.forEach((header, index) => {
+        named[header] = row[index];
+      });
+      return named;
+    }
+    if (row && typeof row === "object") return row as Record<string, unknown>;
+    throw new RemoteSourceError("Zetaris row was not an object", { retryable: false });
+  });
+}
+
+export async function cachedRows<T>(
+  cache: Map<string, Promise<T>> | undefined,
+  key: string,
+  load: () => Promise<T>,
+): Promise<{ value: T; hit: boolean }> {
+  if (!cache) return { value: await load(), hit: false };
+  const existing = cache.get(key);
+  if (existing) return { value: await existing, hit: true };
+  const pending = load();
+  cache.set(key, pending);
+  try {
+    return { value: await pending, hit: false };
+  } catch (error) {
+    cache.delete(key);
+    throw error;
+  }
 }
 
 function sleep(ms: number): Promise<void> {
@@ -65,18 +168,6 @@ function traceSql(status: "success" | "retrying" | "error" | "fallback", sql: st
     retry_count: retry,
     status,
   });
-}
-
-function extractRows(body: unknown): Record<string, unknown>[] {
-  if (!body || typeof body !== "object") throw new RemoteSourceError("Zetaris response was not JSON", { retryable: false });
-  const data = (body as { data?: unknown }).data;
-  const rows = Array.isArray(data)
-    ? data
-    : data && typeof data === "object" && Array.isArray((data as { rows?: unknown }).rows)
-      ? (data as { rows: unknown[] }).rows
-      : null;
-  if (!rows) throw new RemoteSourceError("Zetaris response has no data array", { retryable: false });
-  return rows.filter((row): row is Record<string, unknown> => !!row && typeof row === "object");
 }
 
 async function executeOnce(config: AppConfig, sql: string, limit: number): Promise<Record<string, unknown>[]> {
@@ -116,17 +207,15 @@ async function executeOnce(config: AppConfig, sql: string, limit: number): Promi
     });
   }
   try {
-    return extractRows(JSON.parse(text) as unknown);
+    return rowsFromZetarisBody(JSON.parse(text) as unknown);
   } catch (error) {
     if (error instanceof RemoteSourceError) throw error;
     throw new RemoteSourceError("Zetaris response was not JSON", { retryable: false });
   }
 }
 
-export async function runSql(sql: string, limit = 500): Promise<Record<string, unknown>[]> {
-  const statement = assertSingleStatement(sql);
+async function loadRows(statement: string, bounded: number): Promise<Record<string, unknown>[]> {
   const config = loadConfig();
-  const bounded = Math.max(1, Math.min(5000, limit));
   const attempts = config.MAX_RETRIES + 1;
   let last: RemoteSourceError | null = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -147,26 +236,42 @@ export async function runSql(sql: string, limit = 500): Promise<Record<string, u
   throw last ?? new RemoteSourceError("zetaris failed");
 }
 
-function markFallback(detail: string): void {
+export async function runSql(sql: string, limit = 500): Promise<Record<string, unknown>[]> {
+  const statement = assertSingleStatement(sql);
+  const bounded = Math.max(1, Math.min(5000, limit));
+  const key = `${bounded}\n${statement}`;
+  const { value, hit } = await cachedRows(currentContext()?.queryCache, key, () => loadRows(statement, bounded));
+  if (hit) traceSql("success", statement, "cache", value.length, 0);
+  return value;
+}
+
+function markFallback(table: string, file: string, detail: string): void {
+  currentContext()?.markSampleFallback(`maize.${table} -> sample:${file}: ${detail}`);
   traceEvent({
     action: "zetaris_sql",
     input_summary: detail,
-    output_summary: "using data/sample after the live query failed",
+    output_summary: `fallback sample:${file} after maize.${table} failed`,
     target_agent: null,
     confidence: null,
     retry_count: 0,
     status: "fallback",
   });
-  currentContext()?.markSampleFallback(detail);
 }
 
 async function withSampleFallback<T>(options: {
+  table: string;
+  file: string;
   fullSql: string;
   narrowSql: string;
   map: (rows: Record<string, unknown>[]) => T;
   sample: () => T;
   synthetic: boolean;
 }): Promise<SourceHit<T>> {
+  const live = {
+    via: "zetaris" as const,
+    synthetic: false,
+    evidenceSource: evidenceLabel("zetaris", options.table, options.file),
+  };
   const finish = (error: unknown): SourceHit<T> => {
     const config = loadConfig();
     if (!config.SAMPLE_MODE) {
@@ -176,17 +281,22 @@ async function withSampleFallback<T>(options: {
       });
       throw new RemoteSourceError("zetaris failed");
     }
-    markFallback(error instanceof Error ? error.message : "query failed");
-    return { value: options.sample(), via: "sample", synthetic: options.synthetic };
+    markFallback(options.table, options.file, error instanceof Error ? error.message : "query failed");
+    return {
+      value: options.sample(),
+      via: "sample",
+      synthetic: options.synthetic,
+      evidenceSource: evidenceLabel("sample", options.table, options.file),
+    };
   };
   try {
     const rows = await runSql(options.fullSql, 500);
-    return { value: options.map(rows), via: "zetaris", synthetic: false };
+    return { value: options.map(rows), ...live };
   } catch (error) {
     if (error instanceof RemoteSourceError && error.timeout) {
       try {
         const rows = await runSql(options.narrowSql, 50);
-        return { value: options.map(rows), via: "zetaris", synthetic: false };
+        return { value: options.map(rows), ...live };
       } catch (narrowError) {
         return finish(narrowError);
       }
@@ -202,10 +312,13 @@ function countyClause(county: string): string {
 
 export async function readPrices(county: string): Promise<SourceHit<KamisRow[]>> {
   const where = countyClause(county);
-  const columns = "market_date, county, market_name, commodity, variety, grade, unit_kg, wholesale_price_kes, retail_price_kes, volume_bags";
+  const { table, file, columns } = MAIZE_TABLES.prices;
+  const from = maizeFrom(table);
   return withSampleFallback({
-    fullSql: `SELECT ${columns} FROM kamis_prices WHERE ${where}`,
-    narrowSql: `SELECT ${columns} FROM kamis_prices WHERE ${where} AND market_date >= DATE '2026-10-01'`,
+    table,
+    file,
+    fullSql: `SELECT ${columns} FROM ${from} WHERE ${where}`,
+    narrowSql: `SELECT ${columns} FROM ${from} WHERE ${where} AND market_date >= DATE '2026-10-01'`,
     map: (rows) => rows.map((row) => mapKamisRow(row)).filter((row): row is KamisRow => row !== null && row.county.toLowerCase() === county.toLowerCase()),
     sample: () => loadPriceRows().filter((row) => row.county.toLowerCase() === county.toLowerCase()),
     synthetic: false,
@@ -214,9 +327,13 @@ export async function readPrices(county: string): Promise<SourceHit<KamisRow[]>>
 
 export async function readWeather(county: string): Promise<SourceHit<WeatherSeries | null>> {
   const where = countyClause(county);
+  const { table, file, columns } = MAIZE_TABLES.weather;
+  const from = maizeFrom(table);
   return withSampleFallback({
-    fullSql: `SELECT county, as_of, source, forecast_date, rain_mm, humidity_pct, temp_c FROM weather_daily WHERE ${where}`,
-    narrowSql: `SELECT county, as_of, forecast_date, rain_mm, humidity_pct FROM weather_daily WHERE ${where} AND forecast_date >= DATE '2026-10-01'`,
+    table,
+    file,
+    fullSql: `SELECT ${columns} FROM ${from} WHERE ${where}`,
+    narrowSql: `SELECT county, as_of, forecast_date, rain_mm, humidity_pct FROM ${from} WHERE ${where} AND forecast_date >= DATE '2026-10-01'`,
     map: (rows) => seriesFromSql(county, rows),
     sample: () => loadWeather().find((series) => series.county.toLowerCase() === county.toLowerCase()) ?? null,
     synthetic: true,
@@ -229,30 +346,40 @@ function seriesFromSql(county: string, rows: Record<string, unknown>[]): Weather
     const row: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(raw)) row[key.toLowerCase()] = value;
     const date = String(row.forecast_date ?? row.date ?? "");
-    const rain = Number(row.rain_mm);
-    const humidity = Number(row.humidity_pct);
-    if (!date || !Number.isFinite(rain) || !Number.isFinite(humidity)) return [];
-    return [{ date: date.slice(0, 10), rain_mm: rain, humidity_pct: humidity, temp_c: Number(row.temp_c) }];
+    const rain = finiteNumber(row.rain_mm);
+    const humidity = finiteNumber(row.humidity_pct);
+    if (!date || date === "null" || rain === undefined || humidity === undefined) return [];
+    const temp = finiteNumber(row.temp_c);
+    return [{ date: date.slice(0, 10), rain_mm: rain, humidity_pct: humidity, ...(temp === undefined ? {} : { temp_c: temp }) }];
   });
   const first = rows[0] ?? {};
-  const asOf = String((first.as_of ?? first.AS_OF ?? days[0]?.date) ?? "");
-  return { county, as_of: asOf.slice(0, 10), source: "zetaris:weather_daily", synthetic: false, days };
+  const lowered: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(first)) lowered[key.toLowerCase()] = value;
+  const asOf = String(lowered.as_of ?? days[0]?.date ?? "");
+  const origin = lowered.source ? String(lowered.source) : "zetaris:weather_daily";
+  return { county, as_of: asOf.slice(0, 10), source: origin, synthetic: false, days };
 }
 
 export async function readRules(): Promise<SourceHit<StorageRule[]>> {
+  const { table, file, columns } = MAIZE_TABLES.rules;
+  const from = maizeFrom(table);
   return withSampleFallback({
-    fullSql: "SELECT storage, rain_mm_min, humidity_min, daily_loss_pct FROM storage_loss_rules",
-    narrowSql: "SELECT storage, rain_mm_min, humidity_min, daily_loss_pct FROM storage_loss_rules WHERE storage IN ('open_bags', 'dry_store')",
+    table,
+    file,
+    fullSql: `SELECT ${columns} FROM ${from}`,
+    narrowSql: `SELECT ${columns} FROM ${from} WHERE storage IN ('open_bags', 'dry_store')`,
     map: (rows) => rows.flatMap((raw) => {
       const row: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(raw)) row[key.toLowerCase()] = value;
       const storage = String(row.storage ?? "");
-      const daily = Number(row.daily_loss_pct);
-      if (!storage || !Number.isFinite(daily)) return [];
+      const daily = finiteNumber(row.daily_loss_pct);
+      const rainMin = finiteNumber(row.rain_mm_min);
+      const humidityMin = finiteNumber(row.humidity_min);
+      if (!storage || daily === undefined || rainMin === undefined || humidityMin === undefined) return [];
       return [{
         storage,
-        rain_mm_min: Number(row.rain_mm_min ?? 0),
-        humidity_min: Number(row.humidity_min ?? 0),
+        rain_mm_min: rainMin,
+        humidity_min: humidityMin,
         daily_loss_pct: daily,
       }];
     }),
@@ -263,9 +390,13 @@ export async function readRules(): Promise<SourceHit<StorageRule[]>> {
 
 export async function readNews(county: string): Promise<SourceHit<NewsItem[]>> {
   const where = `(county = ${sqlString(county, "county")} OR county = 'national')`;
+  const { table, file, columns } = MAIZE_TABLES.news;
+  const from = maizeFrom(table);
   return withSampleFallback({
-    fullSql: `SELECT id, as_of, county, maize_type, status, direction, headline, commodity FROM market_news WHERE ${where}`,
-    narrowSql: `SELECT id, as_of, county, maize_type, status, direction, headline FROM market_news WHERE ${where} AND as_of >= DATE '2026-10-01'`,
+    table,
+    file,
+    fullSql: `SELECT ${columns} FROM ${from} WHERE ${where}`,
+    narrowSql: `SELECT id, as_of, county, maize_type, status, direction, headline FROM ${from} WHERE ${where} AND as_of >= DATE '2026-10-01'`,
     map: (rows) => rows.flatMap((raw) => {
       const item = mapNews(raw);
       return item ? [item] : [];
@@ -296,9 +427,13 @@ function mapNews(raw: Record<string, unknown>): NewsItem | null {
 
 export async function readFarmerLedger(farmerId: string): Promise<SourceHit<LedgerEntry[]>> {
   const id = sqlString(farmerId, "farmer_id");
+  const { table, file, columns } = MAIZE_TABLES.ledger;
+  const from = maizeFrom(table);
   return withSampleFallback({
-    fullSql: `SELECT farmer_id, county, as_of, record_type, verdict, hold_days, bags, storage, forecast_rain_mm_7d, notes FROM farmer_ledger WHERE farmer_id = ${id}`,
-    narrowSql: `SELECT farmer_id, as_of, record_type, verdict, forecast_rain_mm_7d FROM farmer_ledger WHERE farmer_id = ${id} AND as_of >= DATE '2026-09-01'`,
+    table,
+    file,
+    fullSql: `SELECT ${columns} FROM ${from} WHERE farmer_id = ${id}`,
+    narrowSql: `SELECT farmer_id, as_of, record_type, verdict, forecast_rain_mm_7d FROM ${from} WHERE farmer_id = ${id} AND as_of >= DATE '2026-09-01'`,
     map: (rows) => rows.flatMap((raw) => {
       const entry = mapLedger(raw);
       return entry ? [entry] : [];
@@ -312,20 +447,20 @@ function mapLedger(raw: Record<string, unknown>): LedgerEntry | null {
   const row: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(raw)) row[key.toLowerCase()] = value;
   const farmerId = String(row.farmer_id ?? "");
-  if (!farmerId) return null;
+  if (!farmerId || farmerId === "null") return null;
   const recordType = String(row.record_type ?? "stock");
   const kind = recordType === "prior_verdict" || recordType === "sale" || recordType === "stock" ? recordType : "stock";
-  const verdict = String(row.verdict ?? "");
+  const verdict = row.verdict == null ? "" : String(row.verdict);
   return {
     farmer_id: farmerId,
     county: String(row.county ?? ""),
-    as_of: String(row.as_of ?? "").slice(0, 10),
+    as_of: row.as_of ? String(row.as_of).slice(0, 10) : "",
     record_type: kind,
     verdict: verdict === "sell" || verdict === "hold" || verdict === "split" || verdict === "no_recommendation" ? verdict : undefined,
-    hold_days: Number.isFinite(Number(row.hold_days)) ? Number(row.hold_days) : undefined,
-    bags: Number.isFinite(Number(row.bags)) ? Number(row.bags) : undefined,
+    hold_days: finiteNumber(row.hold_days),
+    bags: finiteNumber(row.bags),
     storage: row.storage ? String(row.storage) : undefined,
-    forecast_rain_mm_7d: Number.isFinite(Number(row.forecast_rain_mm_7d)) ? Number(row.forecast_rain_mm_7d) : undefined,
+    forecast_rain_mm_7d: finiteNumber(row.forecast_rain_mm_7d),
     notes: row.notes ? String(row.notes) : undefined,
   };
 }

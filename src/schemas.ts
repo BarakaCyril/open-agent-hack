@@ -122,8 +122,12 @@ export const CaseStateSchema = z.object({
 
 export type CaseState = z.infer<typeof CaseStateSchema>;
 
+export const DataSourceSchema = z.enum(["zetaris", "mixed", "sample"]);
+export type DataSource = z.infer<typeof DataSourceSchema>;
+
 export const RunResponseSchema = z.object({
   verdict: z.enum(["sell", "hold", "split", "no_recommendation"]),
+  data_source: DataSourceSchema,
   hold_days: z.number().int().nullable(),
   price_range_per_90kg_bag: z.object({
     p10: z.number(),

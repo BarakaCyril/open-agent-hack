@@ -1,4 +1,4 @@
-import { readPrices, readWeather } from "../adapters/zetaris.js";
+import { readPrices, readWeather, resolveDataSource } from "../adapters/zetaris.js";
 import { getMemory } from "../adapters/memory.js";
 import { completeText } from "../adapters/meterless.js";
 import { isWhiteMaizeBag } from "../adapters/sampleData.js";
@@ -99,6 +99,7 @@ export async function buildNoRecommendation(state: CaseState): Promise<RunRespon
     verdict: "no_recommendation",
     hold_days: null,
     price_range_per_90kg_bag: publishedPriceRange("no_recommendation", null),
+    data_source: resolveDataSource(state.sources) ?? "sample",
     confidence: 0,
     evidence: evidenceFrom(state),
     reasoning_trace_summary: noRecommendationSummary(state.coverage.note, reason),
@@ -178,6 +179,7 @@ export async function assemble(state: CaseState): Promise<RunResponse> {
   const response: RunResponse = {
     verdict: ev.best,
     hold_days: holdDays,
+    data_source: resolveDataSource(state.sources) ?? "sample",
     price_range_per_90kg_bag: publishedPriceRange(ev.best, { p10: roundTo(stats.p10), p50: roundTo(stats.p50), p90: roundTo(stats.p90) }),
     confidence,
     evidence: [...market.evidence, ...storage.evidence],
@@ -297,8 +299,10 @@ export function isTwoSentences(text: string): boolean {
 }
 
 function limitationsFor(state: CaseState): string[] {
+  const dataSource = resolveDataSource(state.sources) ?? "sample";
   const lines = [
     "Decision support only. This is not financial advice and it is not an offer to buy or sell maize.",
+    `Data source: ${dataSource}.`,
     "Values come from a fixed-seed Monte Carlo over the cleaned price band and the storage-loss rules.",
     "Farmer history is stored in H-MEM (profile, verdicts, and offer gaps) under data/hmem.",
   ];

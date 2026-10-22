@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { loadConfig } from "../config.js";
-import { CaseStateSchema, type CriticReason, type RunRequest, type RunResponse } from "../schemas.js";
+import { CaseStateSchema, RunResponseSchema, type CriticReason, type RunRequest, type RunResponse } from "../schemas.js";
 import { createTracer, runContext, asAgent, traceEvent } from "../tracing.js";
 import { analyzeMarket } from "../agents/marketAnalyst.js";
 import { analyzeStorage } from "../agents/storageWeatherAnalyst.js";
 import { reviewClaims } from "../agents/riskCritic.js";
+import { resolveDataSource } from "../adapters/zetaris.js";
 import { assemble, buildNoRecommendation, recallAndGate, rememberOutcome } from "../agents/planner.js";
 import { annotateRecheck, loadPrior } from "../agents/watcher.js";
 import { createInitialState } from "./state.js";
@@ -86,9 +87,26 @@ export async function runCase(request: RunRequest): Promise<RunResponse> {
   const tracer = createTracer(traceId, config.LOG_DIR);
   const state = createInitialState(request, traceId);
   const sampleNotes: string[] = [];
+  const close = (response: RunResponse): RunResponse => {
+    const dataSource = resolveDataSource(state.sources, sampleNotes.length) ?? "sample";
+    const withSource = RunResponseSchema.parse({ ...response, data_source: dataSource });
+    traceEvent({
+      action: "complete",
+      input_summary: state.trace_id,
+      output_summary: `verdict=${withSource.verdict} confidence=${withSource.confidence} data_source=${dataSource} fallbacks=${sampleNotes.length}`,
+      target_agent: null,
+      confidence: withSource.confidence,
+      retry_count: state.revision_counts.total + state.refresh_counts.total,
+      status: dataSource === "zetaris" && !state.narrative_fallback ? "success" : "fallback",
+      data_source: dataSource,
+    });
+    return withSource;
+  };
   return runContext.run({
     tracer,
     agent: "Planner",
+    queryCache: new Map(),
+    dataSource: () => resolveDataSource(state.sources, sampleNotes.length),
     markSampleFallback(detail) {
       sampleNotes.push(detail);
     },
@@ -109,7 +127,7 @@ export async function runCase(request: RunRequest): Promise<RunResponse> {
     if (state.coverage.blocking) {
       const blocked = await asAgent("Planner", () => buildNoRecommendation(state));
       await asAgent("Planner", () => rememberOutcome(state, blocked));
-      return blocked;
+      return close(blocked);
     }
     if (request.mode === "recheck") {
       traceEvent({
@@ -211,7 +229,7 @@ export async function runCase(request: RunRequest): Promise<RunResponse> {
       };
       const blocked = await asAgent("Planner", () => buildNoRecommendation(state));
       await asAgent("Planner", () => rememberOutcome(state, blocked));
-      return blocked;
+      return close(blocked);
     }
 
     const checked = CaseStateSchema.safeParse(state);
@@ -224,15 +242,6 @@ export async function runCase(request: RunRequest): Promise<RunResponse> {
       response = await asAgent("Watcher", () => annotateRecheck(state, response));
     }
     await asAgent("Planner", () => rememberOutcome(state, response));
-    traceEvent({
-      action: "complete",
-      input_summary: state.trace_id,
-      output_summary: `verdict=${response.verdict} confidence=${response.confidence}`,
-      target_agent: null,
-      confidence: response.confidence,
-      retry_count: bag.revisions + bag.refreshes,
-      status: sampleNotes.length > 0 || state.narrative_fallback ? "fallback" : "success",
-    });
-    return response;
+    return close(response);
   });
 }

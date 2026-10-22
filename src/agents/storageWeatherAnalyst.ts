@@ -48,12 +48,12 @@ export async function analyzeStorage(state: CaseState): Promise<void> {
     evidence: loss
       ? [
           {
-            source: weatherHit.via === "zetaris" ? "zetaris:weather_daily" : "sample:weather.json",
+            source: weatherHit.evidenceSource,
             as_of: asOf,
             freshness: freshnessLabel(asOf, state.today),
           },
           {
-            source: rulesHit.via === "zetaris" ? "zetaris:storage_loss_rules" : "sample:storage_loss_rules.csv",
+            source: rulesHit.evidenceSource,
             as_of: state.today,
             freshness: "rules",
           },

@@ -44,6 +44,7 @@ function response(verdict: RunResponse["verdict"], traceId: string, reasoning: s
     recheck_schedule: "Recheck on 2026-10-25.",
     plain_reply: `The computed action is ${verdict}. This is decision support only.`,
     trace_id: traceId,
+    data_source: "sample",
     reason: null,
     question_for_farmer: null,
   };

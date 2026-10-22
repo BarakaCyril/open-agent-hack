@@ -42,7 +42,7 @@ export async function loadPrior(state: CaseState): Promise<void> {
         verdict: entry.verdict,
         as_of: entry.as_of,
         forecast_rain_mm_7d: entry.forecast_rain_mm_7d ?? null,
-        source: ledger.via === "zetaris" ? "zetaris:farmer_ledger" : "sample:farmer_ledger.json",
+        source: ledger.evidenceSource,
       };
     }
   }
