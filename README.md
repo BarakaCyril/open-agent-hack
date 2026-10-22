@@ -32,7 +32,7 @@ The sell, hold, or split verdict is the higher value from a fixed-seed Monte Car
 
 ## Tech stack
 
-TypeScript on Node 22. Fastify, Zod, Vitest, tsx. Zetaris for SQL reads. Meterless (OpenAI-compatible, via Nightshift) for compact agent wording. A temporary in-process `MemoryPort` stands where H-MEM will go.
+TypeScript on Node 22. Fastify, Zod, Vitest, tsx. Zetaris for SQL reads. Meterless (OpenAI-compatible, via Nightshift) for compact agent wording. H-MEM (`src/hmem`) stores farmer profile, verdicts, and offer gaps behind `MemoryPort`.
 
 ## Setup
 
@@ -98,7 +98,7 @@ curl -s -X POST http://localhost:8000/run \
 | Critic rejection | Back to the owning analyst. Maximum 2 revisions. |
 | Stale evidence | Refresh retry. Maximum 2. |
 | Rounds | Maximum 3, then `no_recommendation` if still unapproved. |
-| `HMEM_ENABLED=true` | `NotImplementedError` (HTTP 501). H-MEM is not wired. |
+| H-MEM write without a source | Rejected by construction. Farmer records always carry `source: farmer:<id>`. |
 
 Every external call has a timeout. The revision loop is capped. A run returns or fails; it does not wait forever.
 
@@ -111,7 +111,7 @@ See `data/README.md`. The KAMIS-style price file has 51 data rows and was alread
 - Decision support only. The Monte Carlo is a scenario model with a fixed seed (`20261022`), a 0.45 trend damp, and a liquidity penalty of 2 on cash that a hold does not raise today.
 - Loss percentages come from synthetic rules, not measured spoilage on this farm.
 - The price window is short, and several counties have only a handful of quotes.
-- In-process memory resets when the process stops.
+- Farmer memory persists under `data/hmem` (gitignored). A record with an empty source is rejected.
 - Zetaris table names in the adapter (`kamis_prices`, `weather_daily`, `storage_loss_rules`, `market_news`, `farmer_ledger`) are the contract this code sends. They may need a catalog mapping before a live virtual database returns rows.
 - Model text cannot change the computed verdict. If it does not match, the reply stays with the numbers.
 
@@ -119,7 +119,7 @@ See `data/README.md`. The KAMIS-style price file has 51 data rows and was alread
 
 - `data/sample/kamis_dry_maize.csv`, described as a KAMIS sample exported on 14 October 2026. It was not modified.
 - `data/sample/records_sample.json`, `data/sample/metadata.csv`, and `data/download_data.py` were already here. The download script is still a stub. The empty records file is unused.
-- `memory/hmem/` is the H-MEM spec and reference. This project does not modify it and does not implement it.
+- `memory/hmem/` is the H-MEM spec and reference. It is not modified. The project implementation is `src/hmem`.
 
 ## Sponsor technology
 
@@ -127,7 +127,7 @@ See `data/README.md`. The KAMIS-style price file has 51 data rows and was alread
 - **Meterless.** OpenAI-compatible chat in `src/adapters/meterless.ts`. The base URL is normalised to a single `/v1`. Health is `GET /v1/models` (`online` only when the payload contains meterless ids; 401/403 is `unauthorized`; `/healthz` is not used). Chat sends `meterless-app: open-agent-maize` and `meterless-scope: user`.
 - **NVIDIA via Nightshift lanes.** Meterless is the runtime in front of those lanes. TODO: record the assigned lane names and GPU placement once they are confirmed for this project.
 - **Cursor.** Used to scaffold and edit this repository.
-- **H-MEM.** TODO: replace `InProcessMemory` in `src/adapters/memory.ts` with the reference in `memory/hmem/`. Keep `MemoryPort.recall(farmerId)` and `MemoryPort.remember(farmerId, record)`. TODO: attach trust-ledger provenance and the sleep cycle to stored farmer decisions. Until then, `HMEM_ENABLED=true` throws `NotImplementedError`.
+- **H-MEM.** `src/hmem` implements the spec in `memory/hmem/AGENTS.md` (store, retrieval, mining, sleep, dreaming, trust ledger, conflicts). `src/adapters/memory.ts` keeps `MemoryPort.recall(farmerId)` and `remember(farmerId, record)`. The planner recalls before delegating. Each run writes the farmer profile, the verdict with date and reasoning, and the gap between the trader offer and the county P50. The watcher reads that stored verdict on recheck. TODO: schedule an unattended sleep cycle over farmer history.
 
 ## Trace
 

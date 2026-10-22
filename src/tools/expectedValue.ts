@@ -19,6 +19,14 @@ export interface EvResult {
   sellEv: number;
   holdEv: number;
   splitEv: number;
+  sellGross: number;
+  holdGross: number;
+  splitGross: number;
+  sellPenalty: number;
+  holdPenalty: number;
+  splitPenalty: number;
+  cashNeed: number;
+  penaltyRate: number;
   best: EvAction;
   sellBagsInSplit: number;
   holdBagsInSplit: number;
@@ -26,7 +34,8 @@ export interface EvResult {
 }
 
 export const EV_SEED = 20261022;
-const LIQUIDITY_PENALTY = 2;
+/** Charged once per KES of cash the action does not raise today. */
+export const LIQUIDITY_PENALTY = 2;
 
 export function mulberry32(seed: number): () => number {
   let state = seed >>> 0;
@@ -50,9 +59,10 @@ function triangular(rng: () => number, left: number, mode: number, right: number
   return hi - Math.sqrt((1 - draw) * span * (hi - mid));
 }
 
-function score(immediateCash: number, terminalWealth: number, cashNeed: number): number {
+function scored(immediateCash: number, terminalWealth: number, cashNeed: number): { gross: number; penalty: number; value: number } {
   const shortfall = Math.max(0, cashNeed - immediateCash);
-  return terminalWealth - shortfall * LIQUIDITY_PENALTY;
+  const penalty = shortfall * LIQUIDITY_PENALTY;
+  return { gross: terminalWealth, penalty, value: terminalWealth - penalty };
 }
 
 export function expectedValue(input: EvInput): EvResult {
@@ -67,6 +77,12 @@ export function expectedValue(input: EvInput): EvResult {
   let sellSum = 0;
   let holdSum = 0;
   let splitSum = 0;
+  let sellGrossSum = 0;
+  let holdGrossSum = 0;
+  let splitGrossSum = 0;
+  let sellPenaltySum = 0;
+  let holdPenaltySum = 0;
+  let splitPenaltySum = 0;
   for (let i = 0; i < simulations; i += 1) {
     const futurePrice = triangular(rng, input.futureP10, input.futureP50, input.futureP90);
     const loss = Math.min(0.95, Math.max(0, triangular(rng, input.lossP10, input.lossMean, input.lossP90)));
@@ -75,9 +91,18 @@ export function expectedValue(input: EvInput): EvResult {
     const holdTerminal = input.bags * kept * futurePrice;
     const splitImmediate = sellBagsInSplit * input.sellPricePerBag;
     const splitTerminal = splitImmediate + holdBagsInSplit * kept * futurePrice;
-    sellSum += score(sellCash, sellCash, input.cashNeed);
-    holdSum += score(0, holdTerminal, input.cashNeed);
-    splitSum += score(splitImmediate, splitTerminal, input.cashNeed);
+    const sell = scored(sellCash, sellCash, input.cashNeed);
+    const hold = scored(0, holdTerminal, input.cashNeed);
+    const split = scored(splitImmediate, splitTerminal, input.cashNeed);
+    sellSum += sell.value;
+    holdSum += hold.value;
+    splitSum += split.value;
+    sellGrossSum += sell.gross;
+    holdGrossSum += hold.gross;
+    splitGrossSum += split.gross;
+    sellPenaltySum += sell.penalty;
+    holdPenaltySum += hold.penalty;
+    splitPenaltySum += split.penalty;
   }
   const sellEv = sellSum / simulations;
   const holdEv = holdSum / simulations;
@@ -89,5 +114,47 @@ export function expectedValue(input: EvInput): EvResult {
     bestValue = holdEv;
   }
   if (splitEv > bestValue) best = "split";
-  return { sellEv, holdEv, splitEv, best, sellBagsInSplit, holdBagsInSplit, holdDays: input.holdDays };
+  return {
+    sellEv,
+    holdEv,
+    splitEv,
+    sellGross: sellGrossSum / simulations,
+    holdGross: holdGrossSum / simulations,
+    splitGross: splitGrossSum / simulations,
+    sellPenalty: sellPenaltySum / simulations,
+    holdPenalty: holdPenaltySum / simulations,
+    splitPenalty: splitPenaltySum / simulations,
+    cashNeed: input.cashNeed,
+    penaltyRate: LIQUIDITY_PENALTY,
+    best,
+    sellBagsInSplit,
+    holdBagsInSplit,
+    holdDays: input.holdDays,
+  };
+}
+
+function kes(value: number): string {
+  return Math.round(value).toLocaleString("en-KE");
+}
+
+/** Names the cash-need charge so a lower scored hold value is not read as a different grain price. */
+export function describeLiquidityPenalty(result: EvResult): string | null {
+  if (result.cashNeed <= 0) return null;
+  const lines: string[] = [];
+  if (result.holdPenalty > 0) {
+    lines.push(
+      `Holding raises no cash today, so the cash need of ${kes(result.cashNeed)} KES is charged at a penalty rate of ${result.penaltyRate}: ${kes(result.holdPenalty)} KES is subtracted from the hold grain value of ${kes(result.holdGross)} KES, leaving a scored hold value of ${kes(result.holdEv)} KES.`,
+    );
+  }
+  if (result.sellPenalty > 0) {
+    lines.push(
+      `A full sale still misses part of that cash need, so ${kes(result.sellPenalty)} KES is subtracted from the sale value of ${kes(result.sellGross)} KES.`,
+    );
+  }
+  if (result.splitPenalty > 0) {
+    lines.push(
+      `The split still misses part of that cash need, so ${kes(result.splitPenalty)} KES is subtracted from its grain-plus-sale value of ${kes(result.splitGross)} KES.`,
+    );
+  }
+  return lines.length > 0 ? lines.join(" ") : null;
 }

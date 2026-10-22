@@ -3,8 +3,8 @@ import { getMemory } from "../adapters/memory.js";
 import { completeText } from "../adapters/meterless.js";
 import { isWhiteMaizeBag } from "../adapters/sampleData.js";
 import { RunResponseSchema, type CaseState, type RunResponse } from "../schemas.js";
-import { EV_SEED, expectedValue, type EvInput, type EvResult } from "../tools/expectedValue.js";
-import { cleanAndSummarize, projectPriceBand, type PriceStats } from "../tools/prices.js";
+import { EV_SEED, describeLiquidityPenalty, expectedValue, type EvInput, type EvResult } from "../tools/expectedValue.js";
+import { projectPriceBand, type PriceStats } from "../tools/prices.js";
 import { addDays, daysBetween, freshnessLabel, kes, latestClaim, pct, roundTo } from "../orchestration/state.js";
 import { traceEvent } from "../tracing.js";
 
@@ -91,7 +91,6 @@ export async function recallAndGate(state: CaseState): Promise<void> {
 export async function buildNoRecommendation(state: CaseState): Promise<RunResponse> {
   const reason = state.escalation?.reason || state.coverage.note || "The evidence was not strong enough to support an action.";
   const question = state.escalation?.question ?? "Which figure should we correct: the market, the storage type, or the buyer offer?";
-  const range = await observedRange(state);
   const lead = state.coverage.blocking
     ? `${state.request.county} has ${state.coverage.fresh_price_rows} fresh white-maize price ${state.coverage.fresh_price_rows === 1 ? "row" : "rows"}, so this run returns no recommendation.`
     : "This run returns no recommendation because the review could not approve the claims.";
@@ -99,10 +98,10 @@ export async function buildNoRecommendation(state: CaseState): Promise<RunRespon
   const response: RunResponse = {
     verdict: "no_recommendation",
     hold_days: null,
-    price_range_per_90kg_bag: range,
+    price_range_per_90kg_bag: publishedPriceRange("no_recommendation", null),
     confidence: 0,
     evidence: evidenceFrom(state),
-    reasoning_trace_summary: `${state.coverage.note} ${reason}`.trim(),
+    reasoning_trace_summary: noRecommendationSummary(state.coverage.note, reason),
     what_would_change_this_advice: [
       `A recommendation needs at least ${BLOCKING_ROWS} white-maize quotes for ${state.request.county} in the last ${FRESH_DAYS} days, plus a forecast that is current and physically plausible.`,
     ],
@@ -270,7 +269,7 @@ function limitationsFor(state: CaseState): string[] {
   const lines = [
     "Decision support only. This is not financial advice and it is not an offer to buy or sell maize.",
     "Values come from a fixed-seed Monte Carlo over the cleaned price band and the storage-loss rules.",
-    "Farmer memory is an in-process stand-in and is lost when the process stops. H-MEM is not wired yet.",
+    "Farmer history is stored in H-MEM (profile, verdicts, and offer gaps) under data/hmem.",
   ];
   if (state.sources.prices === "sample") {
     lines.push("Price rows were read from data/sample/kamis_dry_maize.csv after the Zetaris call failed.");
@@ -336,21 +335,44 @@ function num(payload: Record<string, unknown>, key: string): number | null {
 }
 
 export async function rememberOutcome(state: CaseState, response: RunResponse): Promise<void> {
-  await getMemory().remember(state.request.farmer_id, {
+  const memory = getMemory();
+  const { farmer_id: farmerId, county, bags, storage } = state.request;
+  const market = latestClaim(state, "MarketAnalyst");
+  const stored = latestClaim(state, "StorageWeatherAnalyst");
+  const benchmark = market ? num(market.payload, "p50") : null;
+  const rain = stored && typeof stored.payload.total_rain_mm === "number" ? stored.payload.total_rain_mm : null;
+  const offer = state.request.offer_per_bag;
+  await memory.remember(farmerId, {
+    kind: "profile",
+    content: `Farmer ${farmerId} in ${county} holds ${bags} bags of white maize in ${storage}.`,
+    payload: { county, bags, storage },
+  });
+  await memory.remember(farmerId, {
     kind: "verdict",
-    content: response.plain_reply,
+    content: `On ${state.today} the computed verdict was ${response.verdict}. ${response.reasoning_trace_summary}`,
     payload: {
       verdict: response.verdict,
       confidence: response.confidence,
       trace_id: response.trace_id,
       hold_days: response.hold_days,
       as_of: state.today,
+      reasoning: response.reasoning_trace_summary,
+      forecast_rain_mm_7d: rain,
     },
   });
+  let gap: number | null = null;
+  if (offer !== undefined && benchmark !== null) {
+    gap = offer - benchmark;
+    await memory.remember(farmerId, {
+      kind: "offer_gap",
+      content: `Trader offer of ${Math.round(offer)} KES per 90 kg bag is ${Math.round(gap)} KES versus the ${county} P50 benchmark of ${Math.round(benchmark)} KES.`,
+      payload: { offer_per_bag: offer, benchmark_p50: benchmark, gap, as_of: state.today },
+    });
+  }
   traceEvent({
     action: "remember",
-    input_summary: state.request.farmer_id,
-    output_summary: `stored verdict=${response.verdict}`,
+    input_summary: farmerId,
+    output_summary: `stored profile verdict=${response.verdict} offer_gap=${gap === null ? "none" : Math.round(gap)}`,
     target_agent: null,
     confidence: response.confidence,
     retry_count: 0,

@@ -27,7 +27,7 @@ export function describeRecheck(prior: RecheckView | null, current: { verdict: s
 
 export async function loadPrior(state: CaseState): Promise<void> {
   const remembered = [...state.memory_recall].reverse().find((record) => record.kind === "verdict" || record.kind === "prior_verdict");
-  const fromMemory = remembered ? priorFromPayload(remembered.payload, remembered.created_at, "memory") : null;
+  const fromMemory = remembered ? priorFromPayload(remembered.payload, remembered.created_at, `hmem:${remembered.farmer_id}`) : null;
   if (fromMemory) {
     state.prior = fromMemory;
   } else {
