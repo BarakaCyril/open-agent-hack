@@ -1,0 +1,86 @@
+{
+  "synthetic": true,
+  "disclaimer": "Synthetic headlines for the demo. Not real NCPB, gazette, or ministry notices.",
+  "items": [
+    {
+      "id": "n1",
+      "as_of": "2026-10-18",
+      "county": "Kirinyaga",
+      "maize_type": "white",
+      "status": "announced",
+      "direction": "up",
+      "headline": "Ngurubani traders report stronger white maize demand this week.",
+      "commodity": "Dry Maize"
+    },
+    {
+      "id": "n2",
+      "as_of": "2026-10-01",
+      "county": "national",
+      "maize_type": "white",
+      "status": "gazetted",
+      "direction": "up",
+      "headline": "Gazette notice: NCPB purchase terms for white maize remain in force.",
+      "commodity": "Dry Maize"
+    },
+    {
+      "id": "n3",
+      "as_of": "2026-10-17",
+      "county": "Kirinyaga",
+      "maize_type": "white",
+      "status": "announced",
+      "direction": "down",
+      "headline": "Unconfirmed talk of a white maize glut at Ngurubani.",
+      "commodity": "Dry Maize"
+    },
+    {
+      "id": "n4",
+      "as_of": "2026-10-16",
+      "county": "national",
+      "maize_type": "yellow",
+      "status": "announced",
+      "direction": "up",
+      "headline": "Yellow maize import parcel reported at Mombasa.",
+      "commodity": "Dry Maize"
+    },
+    {
+      "id": "n5",
+      "as_of": "2026-10-18",
+      "county": "Nairobi",
+      "maize_type": "white",
+      "status": "announced",
+      "direction": "up",
+      "headline": "Wakulima white maize retail quotes firmer.",
+      "commodity": "Dry Maize"
+    },
+    {
+      "id": "n6",
+      "as_of": "2026-10-05",
+      "county": "national",
+      "maize_type": "white",
+      "status": "gazetted",
+      "direction": "flat",
+      "headline": "Gazette notice restates the white maize grading standard.",
+      "commodity": "Dry Maize"
+    },
+    {
+      "id": "n7",
+      "as_of": "2026-09-20",
+      "county": "Garissa",
+      "maize_type": "white",
+      "status": "announced",
+      "direction": "up",
+      "headline": "Single-trader report of a white maize delivery in Garissa.",
+      "commodity": "Dry Maize"
+    },
+    {
+      "id": "n8",
+      "as_of": "2026-10-18",
+      "county": "Kirinyaga",
+      "maize_type": "not_maize",
+      "status": "announced",
+      "direction": "up",
+      "headline": "Yellow beans tighten at Ngurubani.",
+      "commodity": "Beans"
+    }
+  ]
+}

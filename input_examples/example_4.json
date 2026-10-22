@@ -1,0 +1,8 @@
+{
+  "farmer_id": "farmer-kirinyaga-003",
+  "county": "Kirinyaga",
+  "bags": 20,
+  "storage": "open_bags",
+  "offer_per_bag": 3450,
+  "mode": "recheck"
+}

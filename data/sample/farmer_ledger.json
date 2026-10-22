@@ -1,0 +1,45 @@
+{
+  "synthetic": true,
+  "disclaimer": "Synthetic farmer history for the demo. Not real farm records.",
+  "entries": [
+    {
+      "farmer_id": "farmer-kirinyaga-001",
+      "county": "Kirinyaga",
+      "as_of": "2026-10-10",
+      "record_type": "stock",
+      "bags": 20,
+      "storage": "open_bags",
+      "notes": "Twenty 90 kg bags of white maize in open bags at a Kirinyaga smallholding."
+    },
+    {
+      "farmer_id": "farmer-kirinyaga-002",
+      "county": "Kirinyaga",
+      "as_of": "2026-10-10",
+      "record_type": "stock",
+      "bags": 20,
+      "storage": "dry_store",
+      "notes": "Twenty 90 kg bags of white maize in a dry store."
+    },
+    {
+      "farmer_id": "farmer-kirinyaga-003",
+      "county": "Kirinyaga",
+      "as_of": "2026-10-12",
+      "record_type": "prior_verdict",
+      "verdict": "hold",
+      "hold_days": 14,
+      "bags": 20,
+      "storage": "open_bags",
+      "forecast_rain_mm_7d": 4,
+      "notes": "On 12 Oct 2026 the 7-day rain total on file was 4 mm and the recorded action was hold."
+    },
+    {
+      "farmer_id": "farmer-garissa-001",
+      "county": "Garissa",
+      "as_of": "2026-09-02",
+      "record_type": "sale",
+      "bags": 8,
+      "storage": "open_bags",
+      "notes": "One recorded sale. No second market quote is on file."
+    }
+  ]
+}

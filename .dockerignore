@@ -1,0 +1,8 @@
+node_modules
+dist
+logs
+.git
+.env
+memory
+**/*.md
+!data/README.md

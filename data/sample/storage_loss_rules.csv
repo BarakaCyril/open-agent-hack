@@ -1,0 +1,9 @@
+storage,rain_mm_min,humidity_min,daily_loss_pct,synthetic,note
+open_bags,20,80,3.2,true,synthetic heavy rain on open bags
+open_bags,5,70,1.1,true,synthetic light rain on open bags
+open_bags,0,0,0.35,true,synthetic dry day on open bags
+dry_store,20,80,0.18,true,synthetic heavy rain in a dry store
+dry_store,0,0,0.08,true,synthetic default dry store
+hermetic,0,0,0.02,true,synthetic hermetic bag
+crib,10,75,0.9,true,synthetic crib in rain
+crib,0,0,0.25,true,synthetic crib default

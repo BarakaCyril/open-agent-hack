@@ -1,0 +1,28 @@
+{
+  "synthetic": true,
+  "disclaimer": "Synthetic daily forecast for the demo. Not a Kenya Meteorological Department product.",
+  "series": [
+    {
+      "county": "Kirinyaga",
+      "as_of": "2026-10-18",
+      "source": "synthetic-forecast",
+      "days": [
+        { "date": "2026-10-19", "rain_mm": 26, "humidity_pct": 88, "temp_c": 21 },
+        { "date": "2026-10-20", "rain_mm": 31, "humidity_pct": 90, "temp_c": 20 },
+        { "date": "2026-10-21", "rain_mm": 24, "humidity_pct": 86, "temp_c": 21 },
+        { "date": "2026-10-22", "rain_mm": 35, "humidity_pct": 91, "temp_c": 19 },
+        { "date": "2026-10-23", "rain_mm": 28, "humidity_pct": 87, "temp_c": 20 },
+        { "date": "2026-10-24", "rain_mm": 22, "humidity_pct": 85, "temp_c": 22 },
+        { "date": "2026-10-25", "rain_mm": 27, "humidity_pct": 88, "temp_c": 21 }
+      ]
+    },
+    {
+      "county": "Garissa",
+      "as_of": "2026-08-01",
+      "source": "synthetic-forecast-stale",
+      "days": [
+        { "date": "2026-08-02", "rain_mm": 400, "humidity_pct": 99, "temp_c": 34 }
+      ]
+    }
+  ]
+}

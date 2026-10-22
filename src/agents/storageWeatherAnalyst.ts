@@ -1,0 +1,89 @@
+import { readRules, readWeather } from "../adapters/zetaris.js";
+import { completeText } from "../adapters/meterless.js";
+import type { CaseState } from "../schemas.js";
+import { expectedLoss } from "../tools/spoilage.js";
+import { freshnessLabel, pct, roundTo } from "../orchestration/state.js";
+import { traceEvent } from "../tracing.js";
+
+export async function analyzeStorage(state: CaseState): Promise<void> {
+  const { county, storage } = state.request;
+  const weatherHit = await readWeather(county);
+  const rulesHit = await readRules();
+  state.sources.weather = weatherHit.via;
+  state.sources.rules = rulesHit.via;
+  if (weatherHit.via === "sample" && weatherHit.synthetic && !state.synthetic_inputs.includes("weather")) {
+    state.synthetic_inputs.push("weather");
+  }
+  if (rulesHit.via === "sample" && rulesHit.synthetic && !state.synthetic_inputs.includes("rules")) {
+    state.synthetic_inputs.push("rules");
+  }
+
+  const series = weatherHit.value;
+  const forecast = series?.days ?? [];
+  let loss: ReturnType<typeof expectedLoss> | null = null;
+  let failure = "";
+  try {
+    loss = expectedLoss(storage, forecast, rulesHit.value);
+  } catch (error) {
+    failure = error instanceof Error ? error.message : "loss model failed";
+  }
+
+  const asOf = series?.as_of || state.today;
+  const statement = loss
+    ? `${storage} in ${county}: expected loss over ${loss.days} forecast days is ${pct(loss.mean)} (band ${pct(loss.p10)} to ${pct(loss.p90)}). Rain total ${loss.totalRainMm.toFixed(0)} mm. Rules matched on ${loss.rulesMatched} days.`
+    : `No loss distribution for ${storage} in ${county}: ${failure}.`;
+
+  const note = await completeText({
+    agent: "StorageWeatherAnalyst",
+    system: "You comment on storage loss figures. Use only the user message. Do not choose sell, hold, or split. One or two sentences.",
+    user: statement,
+  });
+  if (note.fallback) state.narrative_fallback = true;
+
+  const implausible = forecast.some((day) => day.rain_mm > 200 || day.rain_mm < 0 || day.humidity_pct > 100 || day.humidity_pct < 0);
+  state.claims.push({
+    id: `storage-r${state.revision_counts.storage}-n${state.claims.length}`,
+    agent: "StorageWeatherAnalyst",
+    statement: note.fallback || !note.text ? statement : `${statement} Note: ${note.text.slice(0, 400)}`,
+    evidence: loss
+      ? [
+          {
+            source: weatherHit.via === "zetaris" ? "zetaris:weather_daily" : "sample:weather.json",
+            as_of: asOf,
+            freshness: freshnessLabel(asOf, state.today),
+          },
+          {
+            source: rulesHit.via === "zetaris" ? "zetaris:storage_loss_rules" : "sample:storage_loss_rules.csv",
+            as_of: state.today,
+            freshness: "rules",
+          },
+        ]
+      : [],
+    confidence: loss ? roundTo(loss.rulesMatched === forecast.length && forecast.length > 0 ? 0.8 : 0.35) : 0,
+    payload: {
+      storage,
+      loss_mean: loss?.mean ?? null,
+      loss_p10: loss?.p10 ?? null,
+      loss_p90: loss?.p90 ?? null,
+      days: loss?.days ?? forecast.length,
+      rules_matched: loss?.rulesMatched ?? 0,
+      total_rain_mm: loss?.totalRainMm ?? forecast.reduce((sum, day) => sum + day.rain_mm, 0),
+      forecast_as_of: asOf,
+      forecast_days: forecast.length,
+      implausible_forecast: implausible,
+      error: failure || null,
+    },
+    status: "pending",
+    revision: state.revision_counts.storage,
+  });
+
+  traceEvent({
+    action: "claim",
+    input_summary: `${county} ${storage} days=${forecast.length}`,
+    output_summary: loss ? `loss=${pct(loss.mean)} rain=${loss.totalRainMm.toFixed(0)}` : failure,
+    target_agent: "RiskCritic",
+    confidence: loss ? 0.8 : 0,
+    retry_count: state.revision_counts.storage,
+    status: loss ? "success" : "error",
+  });
+}
