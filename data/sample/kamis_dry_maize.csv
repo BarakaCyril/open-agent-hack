@@ -1,0 +1,52 @@
+market_date,county,market_name,commodity,variety,grade,unit_kg,wholesale_price_kes,retail_price_kes,volume_bags
+2026-10-18,Kirinyaga,Ngurubani Market,Dry Maize,White Maize,Grade 1,90,3450,3800,120
+2026-10-17,Kirinyaga,Ngurubani Market,Dry Maize,White Maize,Grade 1,90,3400,3750,140
+2026-10-16,Kirinyaga,Ngurubani Market,Dry Maize,White Maize,Grade 1,90,3350,3700,95
+2026-10-15,Kirinyaga,Ngurubani Market,Dry Maize,White Maize,Grade 1,90,3300,3650,110
+2026-10-14,Kirinyaga,Ngurubani Market,Dry Maize,White Maize,Grade 1,90,3250,3600,105
+2026-10-13,Kirinyaga,Ngurubani Market,Dry Maize,White Maize,Grade 1,90,3200,3550,130
+2026-10-12,Kirinyaga,Ngurubani Market,Dry Maize,White Maize,Grade 1,90,3180,3500,115
+2026-10-11,Kirinyaga,Ngurubani Market,Dry Maize,White Maize,Grade 1,90,3150,3500,90
+2026-10-10,Kirinyaga,Ngurubani Market,Dry Maize,White Maize,Grade 1,90,3120,3450,100
+2026-10-09,Kirinyaga,Ngurubani Market,Dry Maize,White Maize,Grade 1,90,3100,3450,85
+2026-10-18,Nakuru,Wakahiu Market,Dry Maize,White Maize,Grade 1,90,3200,3500,250
+2026-10-17,Nakuru,Wakahiu Market,Dry Maize,White Maize,Grade 1,90,3180,3480,210
+2026-10-16,Nakuru,Wakahiu Market,Dry Maize,White Maize,Grade 1,90,3150,3450,220
+2026-10-15,Nakuru,Wakahiu Market,Dry Maize,White Maize,Grade 1,90,3150,3450,200
+2026-10-14,Nakuru,Wakahiu Market,Dry Maize,White Maize,Grade 1,90,3100,3400,180
+2026-10-18,Uasin Gishu,Eldoret Market,Dry Maize,White Maize,Grade 1,90,3050,3350,400
+2026-10-17,Uasin Gishu,Eldoret Market,Dry Maize,White Maize,Grade 1,90,3000,3300,380
+2026-10-16,Uasin Gishu,Eldoret Market,Dry Maize,White Maize,Grade 1,90,2980,3280,350
+2026-10-18,Machakos,Machakos Market,Dry Maize,White Maize,Grade 1,90,3500,3850,80
+2026-10-17,Machakos,Machakos Market,Dry Maize,White Maize,Grade 1,90,3480,3820,75
+2026-10-16,Machakos,Machakos Market,Dry Maize,White Maize,Grade 1,90,3450,3800,85
+2026-10-18,Nairobi,Wakulima Market,Dry Maize,White Maize,Grade 1,90,3700,4100,600
+2026-10-17,Nairobi,Wakulima Market,Dry Maize,White Maize,Grade 1,90,3680,4050,550
+2026-09-15,Kirinyaga,Ngurubani Market,Dry Maize,White Maize,Grade 1,90,2800,3100,50
+2026-10-18,Garissa,Garissa Market,Dry Maize,White Maize,Grade 1,90,3900,4300,15
+2026-10-18,Kirinyaga,Ngurubani Market,Dry Maize,White Maize,Grade 1,90,9999,10500,5
+2026-10-18,Kirinyaga,Ngurubani Market,Beans,Yellow Beans,Grade 1,90,9600,10500,60
+2026-10-17,Kirinyaga,Ngurubani Market,Beans,Yellow Beans,Grade 1,90,9500,10400,55
+2026-10-16,Kirinyaga,Ngurubani Market,Beans,Yellow Beans,Grade 1,90,9400,10300,70
+2026-10-18,Nakuru,Wakahiu Market,Beans,Rosecoco,Grade 1,90,9200,10100,110
+2026-10-17,Nakuru,Wakahiu Market,Beans,Rosecoco,Grade 1,90,9150,10000,95
+2026-10-16,Nakuru,Wakahiu Market,Beans,Rosecoco,Grade 1,90,9100,9950,100
+2026-10-18,Machakos,Machakos Market,Beans,Yellow Beans,Grade 1,90,9800,10800,45
+2026-10-17,Machakos,Machakos Market,Beans,Yellow Beans,Grade 1,90,9750,10700,50
+2026-10-18,Nairobi,Wakulima Market,Beans,Yellow Beans,Grade 1,90,10200,11200,200
+2026-10-18,Nyandarua,Ol Kalou Market,Irish Potatoes,Shangi,Grade 1,50,2600,3000,300
+2026-10-17,Nyandarua,Ol Kalou Market,Irish Potatoes,Shangi,Grade 1,50,2550,2950,280
+2026-10-16,Nyandarua,Ol Kalou Market,Irish Potatoes,Shangi,Grade 1,50,2500,2900,310
+2026-10-18,Nakuru,Wakahiu Market,Irish Potatoes,Shangi,Grade 1,50,2800,3200,240
+2026-10-17,Nakuru,Wakahiu Market,Irish Potatoes,Shangi,Grade 1,50,2750,3150,220
+2026-10-16,Nakuru,Wakahiu Market,Irish Potatoes,Shangi,Grade 1,50,2700,3100,250
+2026-10-18,Nairobi,Wakulima Market,Irish Potatoes,Shangi,Grade 1,50,3200,3700,450
+2026-10-18,Kirinyaga,Ngurubani Market,Rice,Pishori,Grade 1,50,6800,7500,180
+2026-10-17,Kirinyaga,Ngurubani Market,Rice,Pishori,Grade 1,50,6750,7450,190
+2026-10-16,Kirinyaga,Ngurubani Market,Rice,Pishori,Grade 1,50,6700,7400,160
+2026-10-18,Nairobi,Wakulima Market,Rice,Pishori,Grade 1,50,7400,8200,350
+2026-10-18,Machakos,Machakos Market,Sorghum,Red Sorghum,Grade 1,90,3800,4200,80
+2026-10-17,Machakos,Machakos Market,Sorghum,Red Sorghum,Grade 1,90,3750,4150,75
+2026-10-16,Machakos,Machakos Market,Sorghum,Red Sorghum,Grade 1,90,3700,4100,90
+2026-10-18,Nakuru,Wakahiu Market,Sorghum,Red Sorghum,Grade 1,90,3600,4000,120
+2026-10-17,Nakuru,Wakahiu Market,Sorghum,Red Sorghum,Grade 1,90,3550,3950,110
