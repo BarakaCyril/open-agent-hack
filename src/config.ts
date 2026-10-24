@@ -9,6 +9,8 @@ const EnvSchema = z.object({
   ZETARIS_REST_URL: z.string().min(1),
   ZETARIS_API_KEY: z.string().min(1),
   ZETARIS_ORG_ID: z.string().min(1),
+  ZETARIS_ADMIN_EMAIL: z.string().optional().default(""),
+  ZETARIS_ADMIN_PASSWORD: z.string().optional().default(""),
   METERLESS_BASE_URL: z.string().min(1).default("http://127.0.0.1:8088/v1"),
   METERLESS_RUNTIME_TOKEN: z.string().min(1),
   METERLESS_MODEL: z.string().min(1).default("meterless/auto"),

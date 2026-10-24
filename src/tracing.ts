@@ -143,8 +143,16 @@ function attachChatFields(event: TraceEvent, partial: Partial<TraceEvent>): void
 
 function pointLatest(dir: string, fileName: string): void {
   const latest = path.join(dir, "latest.jsonl");
-  fs.rmSync(latest, { force: true });
-  fs.symlinkSync(fileName, latest);
+  try {
+    fs.rmSync(latest, { force: true });
+    fs.symlinkSync(fileName, latest);
+  } catch {
+    try {
+      fs.copyFileSync(path.join(dir, fileName), latest);
+    } catch {
+      // Non-fatal if symlink/copy fails on restricted environments
+    }
+  }
 }
 
 export function createTracer(traceId: string, logDir: string, meta: { county: string; mode: string }): Tracer {

@@ -8,5 +8,6 @@ logs/
 dist/
 data/hmem/
 data/cache/
+.codex-build/
 data/hmem/
 data/cache/

@@ -18,6 +18,62 @@ import {
 import { chooseLatestSeries, type ForecastPoint } from "../tools/weatherSeries.js";
 import type { StorageRule } from "../tools/spoilage.js";
 
+let breakerTrippedUntil = 0;
+let inMemoryZetarisToken: string | null = null;
+let inMemoryZetarisOrgId: string | null = null;
+export function isJwtExpired(token: string): boolean {
+  try {
+    const parts = token.split(".");
+    if (parts.length < 2) return true;
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+    if (payload.exp && typeof payload.exp === "number") {
+      return Date.now() >= (payload.exp * 1000 - 60_000);
+    }
+  } catch {
+    return true;
+  }
+  return false;
+}
+
+export async function loginAndGetFreshToken(config: AppConfig): Promise<{ token: string; orgId: string } | null> {
+  const username = config.ZETARIS_ADMIN_EMAIL.trim();
+  const password = config.ZETARIS_ADMIN_PASSWORD;
+  if (!username || !password) return null;
+  try {
+    const base = config.ZETARIS_REST_URL.replace(/\/api\/proxy\/?$/i, "").replace(/\/+$/u, "");
+    const loginUrl = `${base}/api/auth/login`;
+    const res = await fetch(loginUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username,
+        password,
+      }),
+      signal: AbortSignal.timeout(6000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json() as { idToken?: string; orgId?: number | string };
+    if (data.idToken) {
+      inMemoryZetarisToken = data.idToken;
+      process.env.ZETARIS_API_KEY = data.idToken;
+      const orgIdStr = String(data.orgId || config.ZETARIS_ORG_ID);
+      if (data.orgId) inMemoryZetarisOrgId = orgIdStr;
+      return { token: data.idToken, orgId: orgIdStr };
+    }
+  } catch {
+    // non-fatal
+  }
+  return null;
+}
+
+export function isBreakerOpen(): boolean {
+  return Date.now() < breakerTrippedUntil;
+}
+
+export function resetBreaker(): void {
+  breakerTrippedUntil = 0;
+}
+
 export class RemoteSourceError extends Error {
   readonly timeout: boolean;
   readonly retryable: boolean;
@@ -141,6 +197,17 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function networkFailure(error: unknown): string {
+  const cause = error && typeof error === "object" && "cause" in error
+    ? (error as { cause?: unknown }).cause
+    : null;
+  const details = cause && typeof cause === "object" ? cause as Record<string, unknown> : {};
+  const code = typeof details.code === "string" ? details.code : "";
+  const address = typeof details.address === "string" ? details.address : "";
+  const port = typeof details.port === "number" ? `:${details.port}` : "";
+  return code ? `Zetaris connection failed (${code}${address ? ` ${address}${port}` : ""})` : "Zetaris connection failed (network error)";
+}
+
 export function assertSingleStatement(sql: string): string {
   const trimmed = sql.trim().replace(/;+\s*$/u, "");
   if (trimmed.includes(";")) throw new Error("Zetaris accepts one SQL statement per call");
@@ -171,16 +238,30 @@ function traceSql(status: "success" | "retrying" | "error" | "fallback", sql: st
   });
 }
 
-async function executeOnce(config: AppConfig, sql: string, limit: number): Promise<Record<string, unknown>[]> {
+async function executeOnce(config: AppConfig, sql: string, limit: number, isRetry = false): Promise<Record<string, unknown>[]> {
   const url = `${config.ZETARIS_REST_URL.replace(/\/+$/u, "")}/sql-editor/sqls/run`;
   const timeoutMs = config.SOURCE_TIMEOUT_SECONDS * 1000;
+  let token = inMemoryZetarisToken || config.ZETARIS_API_KEY;
+  let orgId = inMemoryZetarisOrgId || config.ZETARIS_ORG_ID;
+  if (!token || isJwtExpired(token)) {
+    const fresh = await loginAndGetFreshToken(config);
+    if (fresh) {
+      token = fresh.token;
+      orgId = fresh.orgId;
+    } else {
+      throw new RemoteSourceError(
+        "Zetaris token is missing or expired. Set ZETARIS_API_KEY or configure ZETARIS_ADMIN_EMAIL and ZETARIS_ADMIN_PASSWORD for automatic refresh.",
+        { retryable: false },
+      );
+    }
+  }
   let response: Response;
   try {
     response = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${config.ZETARIS_API_KEY}`,
-        "X-Org-ID": config.ZETARIS_ORG_ID,
+        Authorization: `Bearer ${token}`,
+        "X-Org-ID": orgId,
         "X-Request-ID": randomUUID(),
         "Content-Type": "application/json",
         Accept: "application/json",
@@ -196,13 +277,21 @@ async function executeOnce(config: AppConfig, sql: string, limit: number): Promi
   } catch (error) {
     const name = error instanceof Error ? error.name : "";
     const timedOut = name === "TimeoutError" || name === "AbortError";
+    const cause = error && typeof error === "object" && "cause" in error ? (error as { cause?: unknown }).cause : null;
+    const isRefused = cause && typeof cause === "object" && (cause as Record<string, unknown>).code === "ECONNREFUSED";
     throw new RemoteSourceError(
-      timedOut ? `Zetaris timed out after ${config.SOURCE_TIMEOUT_SECONDS}s` : "Zetaris request failed",
-      { timeout: timedOut, retryable: !timedOut },
+      timedOut ? `Zetaris timed out after ${config.SOURCE_TIMEOUT_SECONDS}s` : networkFailure(error),
+      { timeout: timedOut, retryable: !timedOut && !isRefused },
     );
   }
   const text = await response.text();
   if (!response.ok) {
+    if (!isRetry && (response.status === 400 || response.status === 401)) {
+      const fresh = await loginAndGetFreshToken(config);
+      if (fresh) {
+        return executeOnce(config, sql, limit, true);
+      }
+    }
     throw new RemoteSourceError(`Zetaris HTTP ${response.status}: ${redact(text).slice(0, 180)}`, {
       retryable: response.status >= 500 || response.status === 429,
     });
@@ -216,6 +305,9 @@ async function executeOnce(config: AppConfig, sql: string, limit: number): Promi
 }
 
 async function loadRows(statement: string, bounded: number): Promise<Record<string, unknown>[]> {
+  if (isBreakerOpen()) {
+    throw new RemoteSourceError("Zetaris is currently offline (circuit breaker open)", { retryable: false });
+  }
   const config = loadConfig();
   const attempts = config.MAX_RETRIES + 1;
   let last: RemoteSourceError | null = null;
@@ -230,7 +322,10 @@ async function loadRows(statement: string, bounded: number): Promise<Record<stri
         : new RemoteSourceError(redact(error instanceof Error ? error.message : "zetaris failed"));
       last = remote;
       traceSql(remote.timeout ? "retrying" : "error", statement, remote.message, 0, attempt - 1);
-      if (remote.timeout || !remote.retryable || attempt >= attempts) throw remote;
+      if (remote.timeout || !remote.retryable || attempt >= attempts) {
+        breakerTrippedUntil = Date.now() + 20_000;
+        throw remote;
+      }
       await sleep(200 * 2 ** (attempt - 1));
     }
   }
@@ -248,6 +343,32 @@ export async function runSql(sql: string, limit = 500): Promise<Record<string, u
   const { value, hit } = await cachedRows(currentContext()?.queryCache, key, () => loadRows(statement, bounded));
   if (hit) traceSql("success", statement, "cache", value.length, 0);
   return value;
+}
+
+export interface ZetarisTableCheck {
+  table: string;
+  status: "online" | "error";
+  row_count?: number;
+  detail?: string;
+}
+
+/** Read-only sponsor proof: confirm every table exists and report its row count without exposing credentials. */
+export async function checkZetarisTables(query: typeof runSql = runSql): Promise<ZetarisTableCheck[]> {
+  const results: ZetarisTableCheck[] = [];
+  for (const { table } of Object.values(MAIZE_TABLES)) {
+    try {
+      const rows = await query(`SELECT COUNT(*) AS row_count FROM ${maizeFrom(table)}`, 1);
+      const count = Number(rows[0]?.row_count);
+      if (!Number.isFinite(count) || count < 0) {
+        results.push({ table, status: "error", detail: "Count query returned no numeric row count." });
+      } else {
+        results.push({ table, status: "online", row_count: count });
+      }
+    } catch (error) {
+      results.push({ table, status: "error", detail: redact(error instanceof Error ? error.message : "Zetaris query failed") });
+    }
+  }
+  return results;
 }
 
 function markFallback(table: string, file: string, detail: string): void {

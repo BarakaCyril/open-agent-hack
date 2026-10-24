@@ -12,6 +12,8 @@
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
     "smoke": "tsx scripts/smoke_test.ts",
+    "ui": "npm --prefix ui run dev",
+    "ui:build": "npm --prefix ui run build",
     "trace": "tsx scripts/trace.ts",
     "refresh:weather": "tsx scripts/refresh_weather.ts",
     "refresh:kamis": "tsx scripts/refresh_kamis.ts"

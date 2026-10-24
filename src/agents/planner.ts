@@ -102,6 +102,7 @@ export async function buildNoRecommendation(state: CaseState): Promise<RunRespon
     verdict: "no_recommendation",
     hold_days: null,
     price_range_per_90kg_bag: publishedPriceRange("no_recommendation", null),
+    decision_values_kes: null,
     data_source: resolveDataSource(state.sources) ?? "sample",
     confidence: 0,
     evidence: evidenceFrom(state),
@@ -185,6 +186,7 @@ export async function assemble(state: CaseState): Promise<RunResponse> {
     hold_days: holdDays,
     data_source: resolveDataSource(state.sources) ?? "sample",
     price_range_per_90kg_bag: publishedPriceRange(ev.best, { p10: roundTo(stats.p10), p50: roundTo(stats.p50), p90: roundTo(stats.p90) }),
+    decision_values_kes: decisionValues(ev),
     confidence,
     evidence: [...market.evidence, ...storage.evidence],
     reasoning_trace_summary: summary.slice(0, 1200),
@@ -251,6 +253,16 @@ function twoSentenceReply(state: CaseState, ev: EvResult, stats: PriceStats, los
 
 export function publishedPriceRange<T>(verdict: string, range: T | null): T | null {
   return verdict === "no_recommendation" ? null : range;
+}
+
+export function decisionValues(ev: EvResult): NonNullable<RunResponse["decision_values_kes"]> {
+  const ranked = [ev.sellEv, ev.holdEv, ev.splitEv].sort((a, b) => b - a);
+  return {
+    sell: roundTo(ev.sellEv),
+    hold: roundTo(ev.holdEv),
+    split: roundTo(ev.splitEv),
+    edge_over_next_best: roundTo(Math.max(0, (ranked[0] ?? 0) - (ranked[1] ?? 0))),
+  };
 }
 
 export function dedupeSentences(text: string): string {

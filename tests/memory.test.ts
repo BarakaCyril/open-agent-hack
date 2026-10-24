@@ -36,6 +36,7 @@ function response(verdict: RunResponse["verdict"], traceId: string, reasoning: s
     verdict,
     hold_days: verdict === "hold" ? 7 : null,
     price_range_per_90kg_bag: { p10: 3118, p50: 3225, p90: 3405 },
+    decision_values_kes: { sell: 68000, hold: 65000, split: 67000, edge_over_next_best: 1000 },
     confidence: 0.62,
     evidence: [],
     reasoning_trace_summary: reasoning,

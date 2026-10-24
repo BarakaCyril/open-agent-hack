@@ -134,6 +134,12 @@ export const RunResponseSchema = z.object({
     p50: z.number(),
     p90: z.number(),
   }).nullable(),
+  decision_values_kes: z.object({
+    sell: z.number(),
+    hold: z.number(),
+    split: z.number(),
+    edge_over_next_best: z.number().nonnegative(),
+  }).nullable(),
   confidence: z.number().min(0).max(1),
   evidence: z.array(EvidenceSchema),
   reasoning_trace_summary: z.string(),

@@ -16,9 +16,19 @@ import { NotImplementedError } from "./errors.js";
 import { runCase } from "./orchestration/graph.js";
 import { RunRequestSchema } from "./schemas.js";
 import { followTrace, hasTrace } from "./tracing.js";
+import { checkZetarisTables } from "./adapters/zetaris.js";
 
 export function buildServer(): FastifyInstance {
   const app = Fastify({ logger: false });
+
+  app.addHook("onRequest", async (request, reply) => {
+    reply.header("Access-Control-Allow-Origin", "*");
+    reply.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE");
+    reply.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    if (request.method === "OPTIONS") {
+      return reply.code(204).send();
+    }
+  });
 
   app.get("/health", async () => ({ status: "ok" }));
 
@@ -60,6 +70,14 @@ export function buildServer(): FastifyInstance {
   });
 
   app.post("/meterless/test", async () => testMeterlessConnection());
+
+  app.get("/zetaris/check", async () => {
+    const tables = await checkZetarisTables();
+    return {
+      status: tables.every((table) => table.status === "online") ? "online" : tables.some((table) => table.status === "online") ? "partial" : "offline",
+      tables,
+    };
+  });
 
   app.post("/meterless/detect", async () => {
     const found = await autoDetectMeterless();

@@ -10,7 +10,29 @@ if (!arg) {
 }
 
 function resolveArg(value: string): string {
-  if (value === "latest") return path.join(resolveLogDir(loadConfig().LOG_DIR), "latest.jsonl");
+  if (value === "latest") {
+    const logDir = resolveLogDir(loadConfig().LOG_DIR);
+    const latestFile = path.join(logDir, "latest.jsonl");
+    try {
+      if (fs.lstatSync(latestFile).isSymbolicLink()) {
+        return latestFile;
+      }
+    } catch {
+      // ignore
+    }
+    try {
+      const files = fs.readdirSync(logDir)
+        .filter((n) => n.endsWith(".jsonl") && n !== "latest.jsonl")
+        .map((n) => ({ name: n, mtime: fs.statSync(path.join(logDir, n)).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime);
+      if (files[0]) {
+        return path.join(logDir, files[0].name);
+      }
+    } catch {
+      // ignore
+    }
+    return latestFile;
+  }
   const direct = path.resolve(value);
   if (fs.existsSync(direct)) return direct;
   const inLogs = path.join(resolveLogDir(loadConfig().LOG_DIR), value);

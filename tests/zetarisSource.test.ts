@@ -1,12 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   MAIZE_TABLES,
   cachedRows,
+  checkZetarisTables,
   evidenceLabel,
+  loginAndGetFreshToken,
   maizeFrom,
   resolveDataSource,
   rowsFromZetarisBody,
 } from "../src/adapters/zetaris.js";
+import type { AppConfig } from "../src/config.js";
 import { mapKamisRow } from "../src/adapters/sampleData.js";
 
 describe("zetaris maize reads", () => {
@@ -45,6 +48,27 @@ describe("zetaris maize reads", () => {
     expect(resolveDataSource({})).toBeNull();
   });
 
+  it("checks all sponsor tables with read-only count queries", async () => {
+    const statements: string[] = [];
+    const tables = await checkZetarisTables(async (sql) => {
+      statements.push(sql);
+      return [{ row_count: "12" }];
+    });
+    expect(tables).toHaveLength(5);
+    expect(tables.every((table) => table.status === "online" && table.row_count === 12)).toBe(true);
+    expect(statements).toHaveLength(5);
+    expect(statements.every((sql) => /^SELECT COUNT\(\*\) AS row_count FROM maize\./.test(sql))).toBe(true);
+  });
+
+  it("reports per-table failures without hiding passing tables", async () => {
+    const tables = await checkZetarisTables(async (sql) => {
+      if (sql.includes("weather_daily")) throw new Error("query failed");
+      return [{ row_count: 1 }];
+    });
+    expect(tables.filter((table) => table.status === "online")).toHaveLength(4);
+    expect(tables.find((table) => table.table === "weather_daily")).toMatchObject({ status: "error", detail: "query failed" });
+  });
+
   it("reuses an identical query inside one run and does not keep a failure", async () => {
     const cache = new Map<string, Promise<number>>();
     let calls = 0;
@@ -60,5 +84,66 @@ describe("zetaris maize reads", () => {
     const fail = new Map<string, Promise<number>>();
     await expect(cachedRows(fail, "bad", () => Promise.reject(new Error("down")))).rejects.toThrow("down");
     expect(fail.size).toBe(0);
+  });
+});
+
+describe("Zetaris token refresh", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const config = (overrides: Partial<AppConfig> = {}): AppConfig => ({
+    PORT: 8000,
+    SAMPLE_MODE: false,
+    ZETARIS_REST_URL: "http://zetaris.test/api/proxy",
+    ZETARIS_API_KEY: "expired.jwt.token",
+    ZETARIS_ORG_ID: "org-test",
+    ZETARIS_ADMIN_EMAIL: "",
+    ZETARIS_ADMIN_PASSWORD: "",
+    METERLESS_BASE_URL: "http://127.0.0.1:8088/v1",
+    METERLESS_RUNTIME_TOKEN: "test-token",
+    METERLESS_MODEL: "meterless/auto",
+    MODEL_PROVIDER: "meterless",
+    NVIDIA_BASE_URL: "https://example.test/v1",
+    NVIDIA_API_KEY: "test-key",
+    NVIDIA_MODEL: "test-model",
+    SOURCE_TIMEOUT_SECONDS: 5,
+    MAX_RETRIES: 1,
+    LOG_DIR: "logs",
+    STALE_DAYS: 3,
+    KAMIS_MAX_PAGES: 2,
+    KAMIS_PER_PAGE: 100,
+    ZETARIS_MAIZE_DIR: "/tmp/maize",
+    ...overrides,
+  });
+
+  it("does not attempt login without explicit credentials", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(loginAndGetFreshToken(config())).resolves.toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refreshes with configured credentials and returns the token in memory", async () => {
+    const previousToken = process.env.ZETARIS_API_KEY;
+    const fetchMock = vi.fn(async () => Response.json({ idToken: "fresh.jwt.token", orgId: "org-live" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const result = await loginAndGetFreshToken(config({
+        ZETARIS_ADMIN_EMAIL: "operator@example.test",
+        ZETARIS_ADMIN_PASSWORD: "configured-test-password",
+      }));
+      expect(result).toEqual({ token: "fresh.jwt.token", orgId: "org-live" });
+      expect(fetchMock).toHaveBeenCalledOnce();
+      const [url, options] = fetchMock.mock.calls[0] ?? [];
+      expect(url).toBe("http://zetaris.test/api/auth/login");
+      expect(JSON.parse(String((options as RequestInit).body))).toEqual({
+        username: "operator@example.test",
+        password: "configured-test-password",
+      });
+    } finally {
+      if (previousToken === undefined) delete process.env.ZETARIS_API_KEY;
+      else process.env.ZETARIS_API_KEY = previousToken;
+    }
   });
 });

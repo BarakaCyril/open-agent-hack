@@ -74,13 +74,21 @@ describe("trace files", () => {
       const names = fs.readdirSync(dir).filter((name) => name !== "latest.jsonl");
       expect(names).toHaveLength(1);
       expect(names[0]).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z_Kirinyaga_advise_abcdef12\.jsonl$/);
-      expect(fs.lstatSync(path.join(dir, "latest.jsonl")).isSymbolicLink()).toBe(true);
-      expect(fs.readlinkSync(path.join(dir, "latest.jsonl"))).toBe(names[0]);
+      if (process.platform === "win32") {
+        expect(fs.existsSync(path.join(dir, "latest.jsonl"))).toBe(true);
+      } else {
+        expect(fs.lstatSync(path.join(dir, "latest.jsonl")).isSymbolicLink()).toBe(true);
+        expect(fs.readlinkSync(path.join(dir, "latest.jsonl"))).toBe(names[0]);
+      }
       expect(lines[0]).toMatch(/^\[\d{2}:\d{2}:\d{2}\] MarketAnalyst -> RiskCritic \| claim \| needs_revision \| needs another quote\.$/);
 
       const newer = createTracer("99999999-3456-4789-8abc-def012345678", dir, { county: "Uasin Gishu", mode: "recheck" });
       newer.finish();
-      expect(fs.readlinkSync(path.join(dir, "latest.jsonl"))).toMatch(/_Uasin_Gishu_recheck_99999999\.jsonl$/);
+      if (process.platform === "win32") {
+        expect(fs.existsSync(path.join(dir, "latest.jsonl"))).toBe(true);
+      } else {
+        expect(fs.readlinkSync(path.join(dir, "latest.jsonl"))).toMatch(/_Uasin_Gishu_recheck_99999999\.jsonl$/);
+      }
     } finally {
       console.log = original;
     }
@@ -143,7 +151,7 @@ describe("trace files", () => {
     }
   });
 
-  it("pretty-prints a trace as a table via npm run trace", () => {
+  it("pretty-prints a trace through the local TypeScript CLI", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "maize-table-"));
     const lines: string[] = [];
     const original = console.log;
@@ -188,7 +196,8 @@ describe("trace files", () => {
     expect(table).toContain("MarketAnalyst -> -");
     expect(table).toContain("842");
     expect(table).toContain("11/5/16");
-    const result = spawnSync("npm", ["run", "trace", "--", "latest"], {
+    const tsxCli = path.join(projectRoot(), "node_modules", "tsx", "dist", "cli.mjs");
+    const result = spawnSync(process.execPath, [tsxCli, "scripts/trace.ts", "latest"], {
       cwd: projectRoot(),
       encoding: "utf8",
       env: { ...process.env, LOG_DIR: dir },
@@ -197,7 +206,7 @@ describe("trace files", () => {
     expect(result.stdout).toContain(file);
     expect(result.stdout).toContain("Hold is the higher value because rain is 4 mm.");
     expect(result.stdout).toContain("11/5/16");
-    const missing = spawnSync("npm", ["run", "trace", "--", path.join(dir, "missing.jsonl")], {
+    const missing = spawnSync(process.execPath, [tsxCli, "scripts/trace.ts", path.join(dir, "missing.jsonl")], {
       cwd: projectRoot(),
       encoding: "utf8",
       env: process.env,

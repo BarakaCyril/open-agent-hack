@@ -45,6 +45,21 @@ npm start
 
 The process listens on port 8000.
 
+### Connect the web UI to a local Zetaris Docker service
+
+The browser talks to Fastify; it must not connect to Zetaris directly. The Vite `/api` proxy forwards UI calls to the backend on port 8000, and the backend sends SQL to the Zetaris REST proxy. Each developer uses a local, untracked `.env` because Docker hostnames, organisation IDs, and credentials differ by machine.
+
+1. Start the Zetaris stack and publish its REST proxy port to the host. Confirm the proxy is reachable at `http://127.0.0.1:3000/api/proxy` (or use the actual host port from that machine's Docker setup).
+2. Copy `.env.example` to `.env`. Set `ZETARIS_REST_URL=http://127.0.0.1:3000/api/proxy`, the organisation ID, and a valid Zetaris API token. If the token expires after 15 minutes, also set `ZETARIS_ADMIN_EMAIL` and `ZETARIS_ADMIN_PASSWORD` for automatic in-memory refresh. Use a dedicated least-privilege account; the app does not include default login credentials or write refreshed tokens to `.env`.
+3. From the repo root, run `npm start`. In another terminal run `npm run ui`; open `http://localhost:3001`.
+4. Confirm `http://localhost:8000/zetaris/check` reports all five tables online. The UI's Zetaris inspector uses the same check through `/api/zetaris/check`.
+
+If Fastify itself runs inside Docker, `127.0.0.1` points at the backend container. Use `host.docker.internal` for a Zetaris port published on the Windows host, or the Zetaris service name and internal port when both services share a Docker network. The host, port, and published route must match the running Zetaris deployment; copying the repo cannot start or configure that external stack by itself.
+
+The five `maize` views must already exist and be loaded on the Zetaris side. A clean clone does not create or populate them automatically; follow the setup steps below. A successful connectivity check proves queries work, while a useful recommendation also requires fresh prices and forecasts. The API reports `data_source`; check it is `zetaris` during a live-data demo and confirm evidence freshness before claiming a recommendation.
+
+Never commit `.env`, a JWT, API key, organisation-specific secret, or admin password. `.env.example` is a template only. Each teammate creates their own `.env` after cloning.
+
 Docker:
 
 ```bash
@@ -210,3 +225,18 @@ npm run trace -- logs/<file>.jsonl
 ```
 
 After a model writes wording, numbers in that wording are checked against the computed text. A mismatch discards the model text, keeps the computed wording, and logs `wording_rejected`. `plain_reply` is at most two plain sentences.
+
+## Web interface
+
+The React interface runs separately from the API during development. Start the backend in one terminal, then start the UI in another:
+
+```bash
+npm start
+npm run ui
+```
+
+Open `http://localhost:3001`. Vite proxies `/api/*` to the backend at `http://127.0.0.1:8000` and removes the `/api` prefix. The interface checks `/health` and `/providers`, submits cases to `/run`, and loads the recorded events from `/run/:traceId/events`. The production UI bundle can be built with `npm run ui:build`; serve the generated `ui/dist` through a static host configured with the same API proxy. It is not served by the Fastify process.
+
+The **Check Zetaris tables** action runs read-only row counts against all five configured `maize` views. The Meterless card accepts its `/connect#k=...` link and stores the token only in the local `.env`; the field clears after submission. A passing connection check proves the current runtime can reach that service. Each case result also labels its live/sample source and includes the actual service/model trace.
+
+For the hackathon demo and submission status, see the [latest slide deck](submission/Open_Agent_Maize_Deck_2026-10-24_v3.pptx), [`submission/hackos_checklist.md`](submission/hackos_checklist.md), [`submission/demo_script.md`](submission/demo_script.md), and [`submission/impact_and_measurement.md`](submission/impact_and_measurement.md).
