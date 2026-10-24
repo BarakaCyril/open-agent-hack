@@ -1,8 +1,9 @@
 import { readRules, readWeather } from "../adapters/zetaris.js";
-import { completeText } from "../adapters/meterless.js";
+import { chat } from "../adapters/meterless.js";
+import { loadConfig } from "../config.js";
 import type { CaseState } from "../schemas.js";
 import { expectedLoss } from "../tools/spoilage.js";
-import { freshnessLabel, pct, roundTo } from "../orchestration/state.js";
+import { describeEvidence, pct, roundTo } from "../orchestration/state.js";
 import { traceEvent } from "../tracing.js";
 
 export async function analyzeStorage(state: CaseState): Promise<void> {
@@ -28,12 +29,13 @@ export async function analyzeStorage(state: CaseState): Promise<void> {
     failure = error instanceof Error ? error.message : "loss model failed";
   }
 
-  const asOf = series?.as_of || state.today;
+  const asOf = series?.as_of ?? "";
+  const staleDays = loadConfig().STALE_DAYS;
   const statement = loss
     ? `${storage} in ${county}: expected loss over ${loss.days} forecast days is ${pct(loss.mean)} (band ${pct(loss.p10)} to ${pct(loss.p90)}). Rain total ${loss.totalRainMm.toFixed(0)} mm. Rules matched on ${loss.rulesMatched} days.`
     : `No loss distribution for ${storage} in ${county}: ${failure}.`;
 
-  const note = await completeText({
+  const note = await chat({
     agent: "StorageWeatherAnalyst",
     system: "You comment on storage loss figures. Use only the user message. Do not choose sell, hold, or split. One or two sentences.",
     user: statement,
@@ -47,16 +49,14 @@ export async function analyzeStorage(state: CaseState): Promise<void> {
     statement: note.fallback || !note.text ? statement : `${statement} Note: ${note.text.slice(0, 400)}`,
     evidence: loss
       ? [
-          {
-            source: weatherHit.evidenceSource,
-            as_of: asOf,
-            freshness: freshnessLabel(asOf, state.today),
-          },
-          {
-            source: rulesHit.evidenceSource,
-            as_of: state.today,
-            freshness: "rules",
-          },
+          describeEvidence(series?.source || "weather", weatherHit.evidenceSource, asOf, state.today, staleDays),
+          describeEvidence(
+            rulesHit.synthetic ? "synthetic-storage-rules" : "storage-loss-rules",
+            rulesHit.evidenceSource,
+            "",
+            state.today,
+            staleDays,
+          ),
         ]
       : [],
     confidence: loss ? roundTo(loss.rulesMatched === forecast.length && forecast.length > 0 ? 0.8 : 0.35) : 0,
@@ -68,7 +68,7 @@ export async function analyzeStorage(state: CaseState): Promise<void> {
       days: loss?.days ?? forecast.length,
       rules_matched: loss?.rulesMatched ?? 0,
       total_rain_mm: loss?.totalRainMm ?? forecast.reduce((sum, day) => sum + day.rain_mm, 0),
-      forecast_as_of: asOf,
+      forecast_as_of: asOf || "undated",
       forecast_days: forecast.length,
       implausible_forecast: implausible,
       error: failure || null,

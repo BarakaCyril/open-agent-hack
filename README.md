@@ -52,7 +52,7 @@ docker build -t open-agent-maize .
 docker run --env-file .env -p 8000:8000 open-agent-maize
 ```
 
-From inside WSL, `127.0.0.1` may not reach Nightshift running on Windows. If `GET /v1/models` fails, set `METERLESS_BASE_URL` to the Windows host address. Do not use the placeholder token `rt-local`.
+From inside WSL, `127.0.0.1` may not reach Nightshift running on Windows. If `GET /v1/models` fails, set `METERLESS_BASE_URL` to the Windows host address. Do not use the placeholder token `rt-local`. The default base URL is `http://127.0.0.1:8088/v1`.
 
 Smoke check (prints PASS or FAIL, and does not print secrets):
 
@@ -98,6 +98,27 @@ A clean clone has `data/sample/` and does not create the remote schema by itself
 
 Do not point `ZETARIS_REST_URL` at port 8889.
 
+## Live refresh
+
+`maize.kamis_prices` and `maize.weather_daily` are schema-store views. They are not insertable. A refresh writes the same Lightning filestore files the initial load copies onto the Zetaris host:
+
+| Script | Host file | View |
+| --- | --- | --- |
+| `npx tsx scripts/refresh_kamis.ts` | `$ZETARIS_MAIZE_DIR/kamis_dry_maize.csv` | `maize.kamis_prices` |
+| `npx tsx scripts/refresh_weather.ts <county>` | `$ZETARIS_MAIZE_DIR/weather.json` | `maize.weather_daily` |
+
+`ZETARIS_MAIZE_DIR` defaults to `/home/zetaris/customer-data/shared/maize`. The filestore reads those paths on the next query, which is the same route as the one-time copy in the setup above. Rows are upserted: a repeated market quote replaces that quote, and an older date stays. A new Open-Meteo issue for a county replaces that county's synthetic series and the same issue date. Other counties, and older Open-Meteo issue dates, stay in the file. If the host directory is not mounted here, the script does not create it and does not report the rows as stored. The analysts then keep the rows already in Zetaris or, when that read fails in sample mode, the files in `data/sample/`. Those sample files are not overwritten.
+
+The forecast comes from the Open-Meteo forecast API. No API key. Daily fields are `precipitation_sum` and `temperature_2m_mean`. The forecast API has no daily humidity field, so humidity is the mean of that day's hourly `relative_humidity_2m`. Coordinates are looked up in `data/counties.csv` and are OpenStreetMap Nominatim relation centroids (ODbL 1.0). A county that is not in that file is an error. The forecast is not requested with a guessed point. Weather data by [Open-Meteo.com](https://open-meteo.com/), [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+
+KAMIS prices use the market-page export at `https://kamis.kilimo.go.ke/site/market`: Dry Maize is `product=1`, the entries control is `per_page`, and the Export to Excel control adds `export=excel`. Later pages use the same query with the row offset in the path (`/site/market/100` is the second page when `per_page` is 100). The client sends `User-Agent: open-agent-maize/0.1 (maize decision support)`, waits 2 seconds between requests, and saves raw responses under `data/cache/` (gitignored). `KAMIS_MAX_PAGES` defaults to 2 and `KAMIS_PER_PAGE` defaults to 100 (one of 10, 50, 100, 500, 1500, 3000). `robots.txt` is fetched first. HTTP 404 means the site published no rules, and the export still waits 2 seconds. A failed robots fetch stops the run. KAMIS terms of use are unconfirmed.
+
+The sheet shows wholesale and retail per kilogram. Stored prices are that figure times 90, because the price tools keep white maize only when `unit_kg` is 90. Supply volume is stored as the number in the sheet. A row is dropped when wholesale or retail is blank, the county or market is the site's `test` placeholder, or the cells do not match the row schema. The run logs how many rows were rejected.
+
+`STALE_DAYS` defaults to 3. RiskCritic rejects a claim when the newest price date or the forecast issue date is older than that. A price window longer than 21 days is still treated as mixed. On that rejection the planner calls `refresh_kamis` for prices and `refresh_weather` for the county forecast, then the analysts query Zetaris again. The SQL cache is cleared only after a file is actually written. The loop allows 2 refreshes. Each one is a trace line `refresh_kamis` or `refresh_weather` with rows fetched, rows stored, and status. A failed refresh keeps the previous rows. Evidence then shows that older `as_of`, not the time of the failed attempt.
+
+Claim evidence is `<origin> via zetaris:<table>` or `<origin> via sample:<file>`. Price origin is `kamis`. Forecast origin is the series source, such as `open-meteo` or `synthetic-forecast`. `as_of` is the quote date or the forecast issue date. Freshness is `same-day`, `Nd`, or `stale-Nd` from `STALE_DAYS`. News and storage rules that have no observation date are `undated`.
+
 ## Usage
 
 ```bash
@@ -119,7 +140,7 @@ curl -s -X POST http://localhost:8000/run \
 
 ## Sample mode
 
-`SAMPLE_MODE=true` loads input rows from `data/sample/` only after a live Zetaris call fails or times out. It does not load a verdict. The response field `data_source` is `zetaris` when every read hit `maize.<table>`, `sample` when every read used a file, and `mixed` when both happened. Evidence is `zetaris:<table>` or `sample:<file>`. A fallback is also a trace line with status `fallback`, and the closing trace line repeats `data_source`. `SAMPLE_MODE=false` returns the source error instead of substituting the sample files. A timeout retries once with a narrower SELECT, then follows that same rule. Identical SQL inside one run is cached and traced as `cache`.
+`SAMPLE_MODE=true` loads input rows from `data/sample/` only after a live Zetaris call fails or times out. It does not load a verdict. The response field `data_source` is `zetaris` when every read hit `maize.<table>`, `sample` when every read used a file, and `mixed` when both happened. The route inside a claim is `zetaris:<table>` or `sample:<file>`, prefixed with the origin (`kamis`, `open-meteo`, `synthetic-forecast`, and the same pattern for news and rules). A fallback is also a trace line with status `fallback`, and the closing trace line repeats `data_source`. `SAMPLE_MODE=false` returns the source error instead of substituting the sample files. A timeout retries once with a narrower SELECT, then follows that same rule. Identical SQL inside one run is cached and traced as `cache`. A successful filestore refresh clears that cache before the analysts run again.
 
 ## Failure handling
 
@@ -134,7 +155,7 @@ curl -s -X POST http://localhost:8000/run \
 | Placeholder token `rt-local` | Refused before any request. Health reports unauthorized. |
 | Fewer than 3 fresh white-maize quotes | `no_recommendation`, with the row count and a question. |
 | Critic rejection | Back to the owning analyst. Maximum 2 revisions. |
-| Stale evidence | Refresh retry. Maximum 2. |
+| Stale prices or forecast (`STALE_DAYS`, default 3) | RiskCritic rejects. The planner calls the KAMIS and Open-Meteo refresh tools, then the analysts query again. Maximum 2 refreshes. A failed refresh keeps the previous rows and their real age. |
 | Rounds | Maximum 3, then `no_recommendation` if still unapproved. |
 | H-MEM write without a source | Rejected by construction. Farmer records always carry `source: farmer:<id>`. |
 
@@ -142,7 +163,7 @@ Every external call has a timeout. The revision loop is capped. A run returns or
 
 ## Data and licensing
 
-See `data/README.md`. The KAMIS-style price file has 51 data rows and was already in the repo (export note: 14 October 2026). KAMIS terms are unconfirmed. Weather, storage-loss rules, news, and the farmer ledger are synthetic and marked as such.
+See `data/README.md`. The KAMIS-style price file has 51 data rows and was already in the repo (export note: 14 October 2026). KAMIS terms are unconfirmed. A live pull uses the market-page Excel export, throttled to one request every 2 seconds. Weather, storage-loss rules, news, and the farmer ledger in `data/sample/` are synthetic and marked as such. A live forecast is Open-Meteo (CC BY 4.0; attribution: Weather data by Open-Meteo.com) at the Nominatim county centroids in `data/counties.csv` (ODbL 1.0).
 
 ## Limitations
 
@@ -162,15 +183,30 @@ See `data/README.md`. The KAMIS-style price file has 51 data rows and was alread
 ## Sponsor technology
 
 - **Zetaris.** SQL reads go through `src/adapters/zetaris.ts`: `POST {ZETARIS_REST_URL}/sql-editor/sqls/run` with `Authorization`, `X-Org-ID`, and a fresh `X-Request-ID`. One statement per call. The body returns `headers` plus row arrays in `data`; the adapter zips them into named columns. Agents call the typed helpers, which select from `maize.<table>`.
-- **Meterless.** OpenAI-compatible chat in `src/adapters/meterless.ts`. The base URL is normalised to a single `/v1`. Health is `GET /v1/models` (`online` only when the payload contains meterless ids; 401/403 is `unauthorized`; `/healthz` is not used). Chat sends `meterless-app: open-agent-maize` and `meterless-scope: user`.
+- **Meterless Runtime** (`meterless`) is the primary provider for every agent reasoning call (`src/adapters/meterless.ts`). Settings are `METERLESS_BASE_URL`, `METERLESS_RUNTIME_TOKEN` (contract key `meterless_runtime_token`), and `METERLESS_MODEL` (default `meterless/auto`). A pasted base URL is normalised to `<origin>/v1`, including values with no scheme or with `/v1/chat/completions`, `/v1/models`, or `/healthz`. A connect link (`http://<host>:<port>/connect#k=<key>`) sets the base URL and the token; the key is never logged. `GET /v1/models` decides health: 401/403 is `unauthorized`, 200 with `meterless/*` ids is `online`, anything else is `offline`. `GET /healthz` is not a health decision. `POST /meterless/test` checks models and then one sentence. `POST /meterless/detect` tries ports 8088, 8090, 8787, and 11434 on `127.0.0.1`, `localhost`, and `[::1]`. Chat sends `Authorization: Bearer`, `meterless-app: open-agent-maize`, and `meterless-scope: user`, with a 180s timeout. Each chat line in the trace records the provider, the model Meterless reports, latency, and token counts when the API returns them.
 - **NVIDIA via Nightshift lanes.** Meterless is the runtime in front of those lanes. TODO: record the assigned lane names and GPU placement once they are confirmed for this project.
 - **Cursor.** Used to scaffold and edit this repository.
 - **H-MEM.** `src/hmem` implements the spec in `memory/hmem/AGENTS.md` (store, retrieval, mining, sleep, dreaming, trust ledger, conflicts). `src/adapters/memory.ts` keeps `MemoryPort.recall(farmerId)` and `remember(farmerId, record)`. The planner recalls before delegating. Each run writes the farmer profile, the verdict with date and reasoning, and the gap between the trader offer and the county P50. The watcher reads that stored verdict on recheck. TODO: schedule an unattended sleep cycle over farmer history.
 
 ## Trace
 
-Each run writes `logs/<trace_id>.jsonl`, one JSON object per line:
+Each run writes `logs/<UTC timestamp>_<county>_<mode>_<first 8 chars of trace_id>.jsonl`, one JSON object per line. `logs/latest.jsonl` is a symlink to the newest file.
 
-`timestamp`, `trace_id`, `agent_name`, `action`, `input_summary`, `output_summary`, `target_agent`, `confidence`, `retry_count`, `status`, `data_source`.
+`timestamp`, `trace_id`, `agent_name`, `action`, `input_summary`, `output_summary`, `target_agent`, `confidence`, `retry_count`, `status`, `data_source`, `provider`, `model`. A chat line also records `latency_ms`, `prompt_tokens`, `completion_tokens`, and `total_tokens` when the API sends them, plus `lane` when Meterless reports one. The chat `input_summary` is one sentence about what the agent asked, with secrets and key=value fragments removed. The chat `output_summary` is the decision and one sentence of rationale. Hidden reasoning text is not logged.
 
-`data_source` on each line is `zetaris`, `mixed`, `sample`, or `null` before any table has been read. The response carries the same field without `null`. Status is one of `success`, `needs_revision`, `retrying`, `partial_success`, `fallback`, `error`. The closing line is `fallback` when any table used a sample file, or when the wording fell back. The same event is printed as a single stdout line. Secrets are redacted.
+`data_source` on each line is `zetaris`, `mixed`, `sample`, or `null` before any table has been read. The response carries the same field without `null`. Status is one of `success`, `needs_revision`, `retrying`, `partial_success`, `fallback`, `error`. The closing line is `fallback` when any table used a sample file, or when the wording fell back. While the run executes, each event is printed as one line: `[10:15:31] MarketAnalyst -> RiskCritic | claim | needs_revision | <summary>.` Secrets are redacted.
+
+Follow a run while it is in progress, or replay it afterwards:
+
+```bash
+curl -N http://localhost:8000/run/<trace_id>/events
+```
+
+Pretty-print a file, or the symlink:
+
+```bash
+npm run trace -- latest
+npm run trace -- logs/<file>.jsonl
+```
+
+After a model writes wording, numbers in that wording are checked against the computed text. A mismatch discards the model text, keeps the computed wording, and logs `wording_rejected`. `plain_reply` is at most two plain sentences.

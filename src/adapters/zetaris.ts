@@ -15,6 +15,7 @@ import {
   type NewsItem,
   type WeatherSeries,
 } from "./sampleData.js";
+import { chooseLatestSeries, type ForecastPoint } from "../tools/weatherSeries.js";
 import type { StorageRule } from "../tools/spoilage.js";
 
 export class RemoteSourceError extends Error {
@@ -236,6 +237,10 @@ async function loadRows(statement: string, bounded: number): Promise<Record<stri
   throw last ?? new RemoteSourceError("zetaris failed");
 }
 
+export function clearReadCache(): void {
+  currentContext()?.queryCache.clear();
+}
+
 export async function runSql(sql: string, limit = 500): Promise<Record<string, unknown>[]> {
   const statement = assertSingleStatement(sql);
   const bounded = Math.max(1, Math.min(5000, limit));
@@ -333,7 +338,7 @@ export async function readWeather(county: string): Promise<SourceHit<WeatherSeri
     table,
     file,
     fullSql: `SELECT ${columns} FROM ${from} WHERE ${where}`,
-    narrowSql: `SELECT county, as_of, forecast_date, rain_mm, humidity_pct FROM ${from} WHERE ${where} AND forecast_date >= DATE '2026-10-01'`,
+    narrowSql: `SELECT county, as_of, source, forecast_date, rain_mm, humidity_pct FROM ${from} WHERE ${where} AND forecast_date >= DATE '2026-10-01'`,
     map: (rows) => seriesFromSql(county, rows),
     sample: () => loadWeather().find((series) => series.county.toLowerCase() === county.toLowerCase()) ?? null,
     synthetic: true,
@@ -341,23 +346,26 @@ export async function readWeather(county: string): Promise<SourceHit<WeatherSeri
 }
 
 function seriesFromSql(county: string, rows: Record<string, unknown>[]): WeatherSeries | null {
-  if (rows.length === 0) return null;
-  const days = rows.flatMap((raw) => {
+  const points: ForecastPoint[] = rows.flatMap((raw) => {
     const row: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(raw)) row[key.toLowerCase()] = value;
     const date = String(row.forecast_date ?? row.date ?? "");
     const rain = finiteNumber(row.rain_mm);
     const humidity = finiteNumber(row.humidity_pct);
-    if (!date || date === "null" || rain === undefined || humidity === undefined) return [];
+    const asOf = String(row.as_of ?? "");
+    const source = row.source ? String(row.source) : "";
+    if (!date || date === "null" || !asOf || asOf === "null" || !source || rain === undefined || humidity === undefined) return [];
     const temp = finiteNumber(row.temp_c);
-    return [{ date: date.slice(0, 10), rain_mm: rain, humidity_pct: humidity, ...(temp === undefined ? {} : { temp_c: temp }) }];
+    return [{
+      date: date.slice(0, 10),
+      rain_mm: rain,
+      humidity_pct: humidity,
+      as_of: asOf.slice(0, 10),
+      source,
+      ...(temp === undefined ? {} : { temp_c: temp }),
+    }];
   });
-  const first = rows[0] ?? {};
-  const lowered: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(first)) lowered[key.toLowerCase()] = value;
-  const asOf = String(lowered.as_of ?? days[0]?.date ?? "");
-  const origin = lowered.source ? String(lowered.source) : "zetaris:weather_daily";
-  return { county, as_of: asOf.slice(0, 10), source: origin, synthetic: false, days };
+  return chooseLatestSeries(county, points);
 }
 
 export async function readRules(): Promise<SourceHit<StorageRule[]>> {

@@ -7,3 +7,6 @@ __pycache__/
 logs/
 dist/
 data/hmem/
+data/cache/
+data/hmem/
+data/cache/

@@ -141,6 +141,8 @@ export const RunResponseSchema = z.object({
   limitations: z.array(z.string()),
   recheck_schedule: z.string(),
   plain_reply: z.string(),
+  provider: z.enum(["meterless", "nvidia"]),
+  model: z.string().min(1),
   trace_id: z.string(),
   reason: z.string().nullable(),
   question_for_farmer: z.string().nullable(),

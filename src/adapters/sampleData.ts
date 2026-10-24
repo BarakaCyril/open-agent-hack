@@ -21,7 +21,7 @@ export interface WeatherSeries {
   as_of: string;
   source: string;
   synthetic: boolean;
-  days: Array<{ date: string; rain_mm: number; humidity_pct: number; temp_c?: number }>;
+  days: Array<{ date: string; rain_mm: number; humidity_pct: number; temp_c?: number; as_of?: string; source?: string }>;
 }
 
 export interface NewsItem {

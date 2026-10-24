@@ -9,12 +9,22 @@ const EnvSchema = z.object({
   ZETARIS_REST_URL: z.string().min(1),
   ZETARIS_API_KEY: z.string().min(1),
   ZETARIS_ORG_ID: z.string().min(1),
-  METERLESS_BASE_URL: z.string().min(1),
+  METERLESS_BASE_URL: z.string().min(1).default("http://127.0.0.1:8088/v1"),
   METERLESS_RUNTIME_TOKEN: z.string().min(1),
   METERLESS_MODEL: z.string().min(1).default("meterless/auto"),
+  MODEL_PROVIDER: z.enum(["meterless", "nvidia"]).default("meterless"),
+  NVIDIA_BASE_URL: z.string().min(1).default("https://integrate.api.nvidia.com/v1"),
+  NVIDIA_API_KEY: z.string().min(1).default("replace-me"),
+  NVIDIA_MODEL: z.string().min(1).default("nvidia/nemotron-3.5-lightning-30b-a3b"),
   SOURCE_TIMEOUT_SECONDS: z.coerce.number().positive().max(120),
   MAX_RETRIES: z.coerce.number().int().min(0).max(5),
   LOG_DIR: z.string().min(1).default("logs"),
+  STALE_DAYS: z.coerce.number().int().min(0).max(30).default(3),
+  KAMIS_MAX_PAGES: z.coerce.number().int().min(1).max(10).default(2),
+  KAMIS_PER_PAGE: z.coerce.number().int().refine((value) => [10, 50, 100, 500, 1500, 3000].includes(value), {
+    message: "must be 10, 50, 100, 500, 1500, or 3000",
+  }).default(100),
+  ZETARIS_MAIZE_DIR: z.string().min(1).default("/home/zetaris/customer-data/shared/maize"),
 });
 
 export type AppConfig = z.infer<typeof EnvSchema>;
@@ -75,9 +85,12 @@ export function resetConfigForTests(): void {
 /** Replace known secret values before anything is written to a log or a response. */
 export function redact(text: string): string {
   let out = text;
-  for (const key of ["ZETARIS_API_KEY", "ZETARIS_ORG_ID", "METERLESS_RUNTIME_TOKEN"]) {
+  for (const key of ["ZETARIS_API_KEY", "ZETARIS_ORG_ID", "METERLESS_RUNTIME_TOKEN", "NVIDIA_API_KEY"]) {
     const value = process.env[key];
     if (value && value.length >= 4) out = out.split(value).join("[redacted]");
   }
-  return out.replace(/Bearer\s+\S+/gi, "Bearer [redacted]").slice(0, 500);
+  return out
+    .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
+    .replace(/([#&?]k=)[^&\s]*/gi, "$1[redacted]")
+    .slice(0, 500);
 }

@@ -1,4 +1,5 @@
-import { completeText } from "../adapters/meterless.js";
+import { chat } from "../adapters/meterless.js";
+import { loadConfig } from "../config.js";
 import type { CaseState, Claim, CriticDecision, CriticReason } from "../schemas.js";
 import { daysBetween, latestClaim } from "../orchestration/state.js";
 import { traceEvent } from "../tracing.js";
@@ -13,6 +14,7 @@ export interface JudgeInput {
   offerPerBag?: number;
   market: Claim | null;
   storageClaim: Claim | null;
+  staleDays?: number;
 }
 
 function record(payload: Record<string, unknown> | undefined): Record<string, unknown> {
@@ -39,6 +41,7 @@ export function judgeClaims(input: JudgeInput): CriticDecision {
   const reasons: CriticReason[] = [];
   const notes: string[] = [];
   const targets = new Set<string>();
+  const staleDays = input.staleDays ?? 3;
   const market = record(input.market?.payload);
   const storage = record(input.storageClaim?.payload);
 
@@ -66,9 +69,9 @@ export function judgeClaims(input: JudgeInput): CriticDecision {
       notes.push(`The price window runs from ${oldest} to ${latest}, which mixes stale quotes into the band.`);
       targets.add("MarketAnalyst");
     }
-    if (latest && daysBetween(latest, input.today) > 10) {
+    if (latest && daysBetween(latest, input.today) > staleDays) {
       reasons.push("freshness");
-      notes.push(`The newest price quote is ${latest}, more than 10 days before ${input.today}.`);
+      notes.push(`The newest price quote is ${latest}, more than ${staleDays} days before ${input.today}.`);
       targets.add("MarketAnalyst");
     }
     const n = num(market, "n");
@@ -108,9 +111,9 @@ export function judgeClaims(input: JudgeInput): CriticDecision {
       targets.add("StorageWeatherAnalyst");
     }
     const forecastAsOf = str(storage, "forecast_as_of");
-    if (forecastAsOf && daysBetween(forecastAsOf, input.today) > 7) {
+    if (forecastAsOf && daysBetween(forecastAsOf, input.today) > staleDays) {
       reasons.push("freshness");
-      notes.push(`The forecast is dated ${forecastAsOf}.`);
+      notes.push(`The forecast is dated ${forecastAsOf}, more than ${staleDays} days before ${input.today}.`);
       targets.add("StorageWeatherAnalyst");
     }
     const rain = num(storage, "total_rain_mm") ?? 0;
@@ -158,8 +161,9 @@ export async function reviewClaims(state: CaseState): Promise<CriticDecision> {
     offerPerBag: state.request.offer_per_bag,
     market: latestClaim(state, "MarketAnalyst") ?? null,
     storageClaim: latestClaim(state, "StorageWeatherAnalyst") ?? null,
+    staleDays: loadConfig().STALE_DAYS,
   });
-  const note = await completeText({
+  const note = await chat({
     agent: "RiskCritic",
     system: "You are a risk critic. Reply with one sentence on evidence quality. Do not change the action code you are given.",
     user: `Action ${decision.action}. Reasons: ${decision.reasons.join(", ") || "none"}. Notes: ${decision.notes.join(" ")}`,

@@ -1,8 +1,9 @@
 import { readFarmerLedger } from "../adapters/zetaris.js";
-import { completeText } from "../adapters/meterless.js";
+import { chat } from "../adapters/meterless.js";
 import type { CaseState, PriorVerdict, RunResponse } from "../schemas.js";
 import { latestClaim } from "../orchestration/state.js";
 import { traceEvent } from "../tracing.js";
+import { isTwoPlainSentences, limitToTwoPlainSentences, plainText } from "../wording.js";
 
 export interface RecheckView {
   verdict: "sell" | "hold" | "split" | "no_recommendation";
@@ -64,15 +65,16 @@ export async function annotateRecheck(state: CaseState, response: RunResponse): 
     ? { verdict: state.prior.verdict, forecast_rain_mm_7d: state.prior.forecast_rain_mm_7d }
     : null;
   const finding = describeRecheck(view, { verdict: response.verdict, rain_mm_7d: rain });
-  const note = await completeText({
+  const note = await chat({
     agent: "Watcher",
     system: "Write exactly two sentences comparing a prior maize verdict with a new computed verdict. Do not invent a different action. No markdown.",
     user: `${finding.summary} Computed verdict: ${response.verdict}.`,
   });
   if (note.fallback) state.narrative_fallback = true;
-  const plain = !note.fallback && note.text.split(/(?<=[.!?])\s+/).filter(Boolean).length === 2 && note.text.toLowerCase().includes(response.verdict)
-    ? note.text.trim()
-    : response.plain_reply;
+  const plainModel = plainText(note.text);
+  const plain = !note.fallback && !note.wordingRejected && isTwoPlainSentences(plainModel) && plainModel.toLowerCase().includes(response.verdict)
+    ? limitToTwoPlainSentences(plainModel)
+    : limitToTwoPlainSentences(response.plain_reply);
   traceEvent({
     action: "recheck",
     input_summary: state.prior ? `prior=${state.prior.verdict}` : "no prior",

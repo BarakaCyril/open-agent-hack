@@ -23,8 +23,8 @@ const cleanMarket = claim("MarketAnalyst", {
   n: 10,
   outlier_count: 1,
   outliers_removed: 1,
-  oldest_date: "2026-10-09",
-  latest_date: "2026-10-18",
+  oldest_date: "2026-10-16",
+  latest_date: "2026-10-20",
   unresolved_conflict: false,
   news: [{ id: "n2", maize_type: "white", status: "gazetted", direction: "up" }],
 });
@@ -33,7 +33,7 @@ const cleanStorage = claim("StorageWeatherAnalyst", {
   loss_mean: 0.18,
   total_rain_mm: 180,
   rules_matched: 7,
-  forecast_as_of: "2026-10-18",
+  forecast_as_of: "2026-10-21",
   implausible_forecast: false,
 });
 
@@ -125,6 +125,36 @@ describe("critic loop caps", () => {
       storageClaim: cleanStorage,
     });
     expect(stale.reasons).toContain("freshness");
+
+    const ageFour = judgeClaims({
+      today: "2026-10-22",
+      bags: 20,
+      storage: "open_bags",
+      market: claim("MarketAnalyst", { ...cleanMarket.payload, latest_date: "2026-10-18", oldest_date: "2026-10-18" }),
+      storageClaim: cleanStorage,
+    });
+    expect(ageFour.action).toBe("reject");
+    expect(ageFour.reasons).toContain("freshness");
+    expect(ageFour.target_agents).toContain("MarketAnalyst");
+
+    const ageThree = judgeClaims({
+      today: "2026-10-22",
+      bags: 20,
+      storage: "open_bags",
+      market: claim("MarketAnalyst", { ...cleanMarket.payload, latest_date: "2026-10-19", oldest_date: "2026-10-19" }),
+      storageClaim: claim("StorageWeatherAnalyst", { ...cleanStorage.payload, forecast_as_of: "2026-10-19" }),
+    });
+    expect(ageThree.action).toBe("approve");
+
+    const oldForecast = judgeClaims({
+      today: "2026-10-22",
+      bags: 20,
+      storage: "open_bags",
+      market: cleanMarket,
+      storageClaim: claim("StorageWeatherAnalyst", { ...cleanStorage.payload, forecast_as_of: "2026-10-18" }),
+    });
+    expect(oldForecast.reasons).toContain("freshness");
+    expect(oldForecast.target_agents).toContain("StorageWeatherAnalyst");
 
     const cash = judgeClaims({
       today: "2026-10-22",

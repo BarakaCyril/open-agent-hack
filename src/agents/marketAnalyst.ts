@@ -1,9 +1,10 @@
 import { readNews, readPrices } from "../adapters/zetaris.js";
-import { completeText } from "../adapters/meterless.js";
+import { chat } from "../adapters/meterless.js";
+import { loadConfig } from "../config.js";
 import { isWhiteMaizeBag, type NewsItem } from "../adapters/sampleData.js";
 import type { CaseState } from "../schemas.js";
 import { cleanAndSummarize, trendOf, type PriceStats, type PriceTrend } from "../tools/prices.js";
-import { daysBetween, freshnessLabel, kes, roundTo } from "../orchestration/state.js";
+import { daysBetween, describeEvidence, kes, roundTo } from "../orchestration/state.js";
 import { traceEvent } from "../tracing.js";
 
 const FRESH_DAYS = 14;
@@ -93,22 +94,21 @@ export async function analyzeMarket(state: CaseState): Promise<void> {
     if (!latest || item.as_of > latest) return item.as_of;
     return latest;
   }, null);
+  const staleDays = loadConfig().STALE_DAYS;
 
   state.claims.push({
     id: `market-r${state.revision_counts.market}-f${state.refresh_counts.market}-n${state.claims.length}`,
     agent: "MarketAnalyst",
     statement: note ? `${statement} Note: ${note}` : statement,
     evidence: [
-      {
-        source: prices.evidenceSource,
-        as_of: stats.latestDate,
-        freshness: freshnessLabel(stats.latestDate, state.today),
-      },
-      {
-        source: newsHit.evidenceSource,
-        as_of: newestNews ?? state.today,
-        freshness: freshnessLabel(newestNews ?? state.today, state.today),
-      },
+      describeEvidence("kamis", prices.evidenceSource, stats.latestDate, state.today, staleDays),
+      describeEvidence(
+        newsHit.synthetic ? "synthetic-news" : "market-news",
+        newsHit.evidenceSource,
+        newestNews ?? "",
+        state.today,
+        staleDays,
+      ),
     ],
     confidence: roundTo(Math.max(0, Math.min(1, stats.n / 10))),
     payload: {
@@ -153,7 +153,7 @@ function newsPayload(item: NewsItem): Record<string, unknown> {
 }
 
 async function modelNote(agent: string, system: string, user: string, state: CaseState): Promise<string | null> {
-  const result = await completeText({ agent, system, user });
+  const result = await chat({ agent, system, user });
   if (result.fallback) {
     state.narrative_fallback = true;
     return null;

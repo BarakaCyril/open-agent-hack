@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { loadConfig } from "../config.js";
 import { CaseStateSchema, RunResponseSchema, type CriticReason, type RunRequest, type RunResponse } from "../schemas.js";
-import { createTracer, runContext, asAgent, traceEvent } from "../tracing.js";
+import { createTracer, runContext, asAgent, traceEvent, currentModelIdentity } from "../tracing.js";
 import { analyzeMarket } from "../agents/marketAnalyst.js";
 import { analyzeStorage } from "../agents/storageWeatherAnalyst.js";
 import { reviewClaims } from "../agents/riskCritic.js";
@@ -9,6 +9,7 @@ import { resolveDataSource } from "../adapters/zetaris.js";
 import { assemble, buildNoRecommendation, recallAndGate, rememberOutcome } from "../agents/planner.js";
 import { annotateRecheck, loadPrior } from "../agents/watcher.js";
 import { createInitialState } from "./state.js";
+import { continueAfterCritique } from "./refresh.js";
 
 export const LOOP_LIMITS = { maxRevisions: 2, maxRefreshes: 2, maxRounds: 3 } as const;
 
@@ -84,16 +85,25 @@ export async function runBoundedLoop(
 export async function runCase(request: RunRequest): Promise<RunResponse> {
   const config = loadConfig();
   const traceId = randomUUID();
-  const tracer = createTracer(traceId, config.LOG_DIR);
+  const tracer = createTracer(traceId, config.LOG_DIR, { county: request.county, mode: request.mode });
+  try {
   const state = createInitialState(request, traceId);
   const sampleNotes: string[] = [];
   const close = (response: RunResponse): RunResponse => {
     const dataSource = resolveDataSource(state.sources, sampleNotes.length) ?? "sample";
-    const withSource = RunResponseSchema.parse({ ...response, data_source: dataSource });
+    const identity = currentModelIdentity();
+    const withSource = RunResponseSchema.parse({
+      ...response,
+      data_source: dataSource,
+      provider: identity.provider,
+      model: identity.model,
+    });
     traceEvent({
       action: "complete",
       input_summary: state.trace_id,
-      output_summary: `verdict=${withSource.verdict} confidence=${withSource.confidence} data_source=${dataSource} fallbacks=${sampleNotes.length}`,
+      output_summary: `provider=${identity.provider} model=${identity.model} verdict=${withSource.verdict} confidence=${withSource.confidence} data_source=${dataSource} fallbacks=${sampleNotes.length}`,
+      provider: identity.provider,
+      model: identity.model,
       target_agent: null,
       confidence: withSource.confidence,
       retry_count: state.revision_counts.total + state.refresh_counts.total,
@@ -102,10 +112,11 @@ export async function runCase(request: RunRequest): Promise<RunResponse> {
     });
     return withSource;
   };
-  return runContext.run({
+    return await runContext.run({
     tracer,
     agent: "Planner",
     queryCache: new Map(),
+    modelAnswer: { provider: null, model: null },
     dataSource: () => resolveDataSource(state.sources, sampleNotes.length),
     markSampleFallback(detail) {
       sampleNotes.push(detail);
@@ -199,6 +210,7 @@ export async function runCase(request: RunRequest): Promise<RunResponse> {
         return decision;
       },
       async onContinue(effect) {
+        await continueAfterCritique(effect, state, bag.refreshes);
         const target = state.last_decision?.target_agents[0] ?? "MarketAnalyst";
         traceEvent({
           agent_name: "RiskCritic",
@@ -244,4 +256,7 @@ export async function runCase(request: RunRequest): Promise<RunResponse> {
     await asAgent("Planner", () => rememberOutcome(state, response));
     return close(response);
   });
+  } finally {
+    tracer.finish();
+  }
 }

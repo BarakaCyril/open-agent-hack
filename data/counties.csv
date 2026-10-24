@@ -1,0 +1,8 @@
+county,latitude,longitude,source,source_url,osm_type,osm_id
+Kirinyaga,-0.4688780,37.3027681,OpenStreetMap Nominatim relation centroid (ODbL 1.0),https://nominatim.openstreetmap.org/search?q=Kirinyaga%20County%2C%20Kenya&format=jsonv2&limit=1,relation,3495546
+Nakuru,-0.4597932,36.1007930,OpenStreetMap Nominatim relation centroid (ODbL 1.0),https://nominatim.openstreetmap.org/search?state=Nakuru&country=Kenya&featureType=state&format=jsonv2&limit=1,relation,14649082
+Machakos,-1.2790046,37.3952698,OpenStreetMap Nominatim relation centroid (ODbL 1.0),https://nominatim.openstreetmap.org/search?q=Machakos%20County%2C%20Kenya&format=jsonv2&limit=1,relation,3492707
+Nairobi,-1.3023980,36.8288509,OpenStreetMap Nominatim relation centroid (ODbL 1.0),https://nominatim.openstreetmap.org/search?q=Nairobi%20County%2C%20Kenya&format=jsonv2&limit=1,relation,3492709
+Uasin Gishu,0.4771938,35.3050597,OpenStreetMap Nominatim relation centroid (ODbL 1.0),https://nominatim.openstreetmap.org/search?q=Uasin%20Gishu%20County%2C%20Kenya&format=jsonv2&limit=1,relation,3495565
+Nyandarua,-0.3917064,36.4977397,OpenStreetMap Nominatim relation centroid (ODbL 1.0),https://nominatim.openstreetmap.org/search?state=Nyandarua&country=Kenya&featureType=state&format=jsonv2&limit=1,relation,3495557
+Garissa,-0.5236333,40.3564053,OpenStreetMap Nominatim relation centroid (ODbL 1.0),https://nominatim.openstreetmap.org/search?q=Garissa%20County%2C%20Kenya&format=jsonv2&limit=1,relation,3495541

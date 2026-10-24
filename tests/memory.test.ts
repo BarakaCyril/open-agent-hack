@@ -43,6 +43,8 @@ function response(verdict: RunResponse["verdict"], traceId: string, reasoning: s
     limitations: ["Decision support only."],
     recheck_schedule: "Recheck on 2026-10-25.",
     plain_reply: `The computed action is ${verdict}. This is decision support only.`,
+    provider: "meterless",
+    model: "meterless/auto",
     trace_id: traceId,
     data_source: "sample",
     reason: null,

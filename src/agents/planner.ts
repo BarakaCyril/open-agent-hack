@@ -1,12 +1,14 @@
 import { readPrices, readWeather, resolveDataSource } from "../adapters/zetaris.js";
+import { loadConfig } from "../config.js";
 import { getMemory } from "../adapters/memory.js";
-import { completeText } from "../adapters/meterless.js";
+import { chat, wordingFallbackNote } from "../adapters/meterless.js";
 import { isWhiteMaizeBag } from "../adapters/sampleData.js";
 import { RunResponseSchema, type CaseState, type RunResponse } from "../schemas.js";
 import { EV_SEED, describeLiquidityPenalty, expectedValue, type EvInput, type EvResult } from "../tools/expectedValue.js";
 import { projectPriceBand, type PriceStats } from "../tools/prices.js";
 import { addDays, daysBetween, freshnessLabel, kes, latestClaim, pct, roundTo } from "../orchestration/state.js";
-import { traceEvent } from "../tracing.js";
+import { currentModelIdentity, traceEvent } from "../tracing.js";
+import { isTwoPlainSentences, limitToTwoPlainSentences, plainText } from "../wording.js";
 
 const FRESH_DAYS = 14;
 const BLOCKING_ROWS = 3;
@@ -56,7 +58,8 @@ export async function recallAndGate(state: CaseState): Promise<void> {
     if (only) parts.push(`That quote is ${Math.round(only.wholesale_price_kes)} KES on ${only.market_date} with reported volume ${only.volume_bags}.`);
   }
   if (forecast?.as_of) {
-    parts.push(`Forecast as of ${forecast.as_of}${forecastAge !== null && forecastAge > 7 ? ` (${forecastAge} days old)` : ""}.`);
+    const staleDays = loadConfig().STALE_DAYS;
+    parts.push(`Forecast as of ${forecast.as_of}${forecastAge !== null && forecastAge > staleDays ? ` (${forecastAge} days old)` : ""}.`);
   } else {
     parts.push("No forecast was returned for this county.");
   }
@@ -108,7 +111,8 @@ export async function buildNoRecommendation(state: CaseState): Promise<RunRespon
     ],
     limitations: limitationsFor(state),
     recheck_schedule: `Recheck on ${addDays(state.today, 2)} or as soon as you can answer the question.`,
-    plain_reply: isTwoSentences(phrased) ? phrased : ensureTwo(reason, question),
+    plain_reply: limitToTwoPlainSentences(isTwoPlainSentences(phrased) ? phrased : ensureTwo(reason, question)),
+    ...currentModelIdentity(),
     trace_id: state.trace_id,
     reason,
     question_for_farmer: question,
@@ -187,7 +191,8 @@ export async function assemble(state: CaseState): Promise<RunResponse> {
     what_would_change_this_advice: changes,
     limitations: penaltyNote ? [...limitationsFor(state), penaltyNote] : limitationsFor(state),
     recheck_schedule: `Recheck on ${addDays(state.today, ev.best === "hold" ? 3 : 7)} or sooner if the forecast or the buyer offer changes.`,
-    plain_reply: reply,
+    plain_reply: limitToTwoPlainSentences(reply),
+    ...currentModelIdentity(),
     trace_id: state.trace_id,
     reason: null,
     question_for_farmer: null,
@@ -266,23 +271,27 @@ export function noRecommendationSummary(coverageNote: string, reason: string): s
 }
 
 async function phrase(state: CaseState, agent: string, fallback: string, verdict: string | null): Promise<string> {
-  const result = await completeText({
+  const result = await chat({
     agent,
     system: "Write exactly two sentences for a Kenyan maize farmer. Decision support, not financial advice. Do not change the action in the user message. No markdown.",
     user: fallback,
   });
+  const plain = plainText(result.text);
   const needsPenalty = fallback.toLowerCase().includes("cash-need penalty");
   if (
     result.fallback
-    || !isTwoSentences(result.text)
-    || (verdict && !result.text.toLowerCase().includes(verdict))
-    || (needsPenalty && !result.text.toLowerCase().includes("penalty"))
+    || result.wordingRejected
+    || !isTwoPlainSentences(plain)
+    || (verdict && !plain.toLowerCase().includes(verdict))
+    || (needsPenalty && !plain.toLowerCase().includes("penalty"))
   ) {
     if (result.fallback) state.narrative_fallback = true;
-    if (isTwoSentences(fallback)) return fallback.trim();
-    return ensureTwo(fallback, "This is decision support, not a promise of the price you will receive.");
+    const computed = isTwoPlainSentences(fallback)
+      ? fallback.trim()
+      : ensureTwo(fallback, "This is decision support, not a promise of the price you will receive.");
+    return limitToTwoPlainSentences(computed);
   }
-  return result.text.trim();
+  return limitToTwoPlainSentences(plain);
 }
 
 function ensureTwo(first: string, second: string): string {
@@ -294,8 +303,7 @@ function ensureTwo(first: string, second: string): string {
 }
 
 export function isTwoSentences(text: string): boolean {
-  const parts = text.trim().split(/(?<=[.!?])\s+/).filter((part) => /[A-Za-z0-9]/.test(part));
-  return parts.length === 2;
+  return isTwoPlainSentences(text);
 }
 
 function limitationsFor(state: CaseState): string[] {
@@ -313,7 +321,7 @@ function limitationsFor(state: CaseState): string[] {
   if (state.synthetic_inputs.includes("rules")) lines.push("Storage-loss rules are synthetic (data/sample/storage_loss_rules.csv).");
   if (state.synthetic_inputs.includes("news")) lines.push("News items are synthetic (data/sample/news.json).");
   if (state.synthetic_inputs.includes("ledger")) lines.push("The farmer ledger used here is synthetic (data/sample/farmer_ledger.json).");
-  if (state.narrative_fallback) lines.push("Wording fell back to the computed figures because the model call did not return a usable reply.");
+  if (state.narrative_fallback) lines.push(wordingFallbackNote());
   lines.push("KAMIS licence terms for the price sample are unconfirmed.");
   return lines;
 }

@@ -23,12 +23,28 @@ export function addDays(isoDate: string, days: number): string {
   return new Date(base + days * 86_400_000).toISOString().slice(0, 10);
 }
 
-export function freshnessLabel(asOf: string, today: string): string {
+export function freshnessLabel(asOf: string, today: string, staleDays = 3): string {
   const age = daysBetween(asOf, today);
   if (!Number.isFinite(age)) return "unknown";
   if (age <= 0) return "same-day";
-  if (age > 10) return `stale-${age}d`;
+  if (age > staleDays) return `stale-${age}d`;
   return `${age}d`;
+}
+
+/** Evidence names the origin, the route the row was read from, and the age of that row. */
+export function describeEvidence(
+  origin: string,
+  route: string,
+  asOf: string,
+  today: string,
+  staleDays = 3,
+): { source: string; as_of: string; freshness: string } {
+  const dated = /^\d{4}-\d{2}-\d{2}/u.test(asOf) ? asOf.slice(0, 10) : "";
+  return {
+    source: `${origin} via ${route}`,
+    as_of: dated || "undated",
+    freshness: dated ? freshnessLabel(dated, today, staleDays) : "undated",
+  };
 }
 
 export function createInitialState(request: RunRequest, traceId = randomUUID(), today = todayIso()): CaseState {
