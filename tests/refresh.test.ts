@@ -9,11 +9,13 @@ import { continueAfterCritique } from "../src/orchestration/refresh.js";
 import { createInitialState } from "../src/orchestration/state.js";
 import { lookupCounty } from "../src/tools/counties.js";
 import { parseKamisWorkbook } from "../src/tools/kamisSheet.js";
-import { upsertPriceFile, upsertWeatherFile } from "../src/tools/maizeFiles.js";
+import { hostDirectoryProblem, upsertPriceFile, upsertWeatherFile } from "../src/tools/maizeFiles.js";
 import { kamisExportUrl, refreshKamis, robotsAllows } from "../src/tools/refreshKamis.js";
 import type { RefreshReport } from "../src/tools/refreshReport.js";
 import { parseOpenMeteoForecast, refreshWeather, type FetchLike } from "../src/tools/refreshWeather.js";
 import { chooseLatestSeries } from "../src/tools/weatherSeries.js";
+import { recordRefreshSuccess } from "../src/tools/refreshState.js";
+import { mixedAgeNote } from "../src/orchestration/state.js";
 import { createTracer, runContext, type RunContext } from "../src/tracing.js";
 
 const kamisFixture = path.join(projectRoot(), "tests", "fixtures", "kamis-market-export.xls");
@@ -164,6 +166,7 @@ describe("refresh tools", () => {
   it("does not call Open-Meteo when the county has no coordinates", async () => {
     let called = false;
     const report = await refreshWeather("Kirinyaga County", {
+      stateFile: path.join(tempDir("refresh-state-"), "state.json"),
       fetch: async () => {
         called = true;
         return bytesResponse(Buffer.from("{}"));
@@ -176,10 +179,9 @@ describe("refresh tools", () => {
     expect(report.stored).toBe(0);
   });
 
-  it("requests the county centroid and does not invent a host directory", async () => {
+  it("requests the county centroid when the host directory can be written", async () => {
     const cacheDir = tempDir("meteo-cache-");
-    const missing = path.join(os.tmpdir(), `missing-maize-${Date.now()}`);
-    fs.rmSync(missing, { recursive: true, force: true });
+    const maizeDir = tempDir("meteo-maize-");
     let requested = "";
     const dir = tempDir("trace-meteo-");
     const tracer = createTracer("abcdef12-0000-4000-8000-000000000002", dir, { county: "Kirinyaga", mode: "advise" });
@@ -194,7 +196,8 @@ describe("refresh tools", () => {
     };
     const report = await runContext.run(ctx, () => refreshWeather("Kirinyaga", {
       cacheDir,
-      maizeDir: missing,
+      maizeDir,
+      stateFile: path.join(cacheDir, "state.json"),
       now: () => new Date("2026-10-24T08:00:00Z"),
       fetch: async (url, init) => {
         requested = url;
@@ -206,15 +209,15 @@ describe("refresh tools", () => {
     expect(requested).toContain("longitude=37.3027681");
     expect(requested).toContain("precipitation_sum");
     expect(requested).toContain("relative_humidity_2m");
-    expect(report.status).toBe("fallback");
+    expect(report.status).toBe("success");
     expect(report.fetched).toBe(2);
-    expect(report.stored).toBe(0);
-    expect(fs.existsSync(missing)).toBe(false);
+    expect(report.stored).toBe(2);
+    expect(fs.existsSync(path.join(maizeDir, "weather.json"))).toBe(true);
     expect(fs.readdirSync(cacheDir).some((name) => name.endsWith(".json"))).toBe(true);
     expect(tracer.events.map((event) => event.action)).toContain("refresh_weather");
     expect(tracer.events[0]?.output_summary).toContain("rows fetched 2");
-    expect(tracer.events[0]?.output_summary).toContain("rows stored 0");
-    expect(tracer.events[0]?.status).toBe("fallback");
+    expect(tracer.events[0]?.output_summary).toContain("rows stored 2");
+    expect(tracer.events[0]?.status).toBe("success");
     tracer.finish();
   });
 
@@ -230,6 +233,7 @@ describe("refresh tools", () => {
       pauseMs: 0,
       cacheDir,
       maizeDir,
+      stateFile: path.join(cacheDir, "state.json"),
       fetch: async (url) => {
         calls.push(url);
         return bytesResponse(Buffer.from("User-agent: *\nDisallow: /site/market\n"), 200);
@@ -244,6 +248,7 @@ describe("refresh tools", () => {
       maxPages: 2,
       cacheDir,
       maizeDir,
+      stateFile: path.join(cacheDir, "state.json"),
       sleep: async (ms) => {
         gaps.push(ms);
       },
@@ -335,5 +340,111 @@ describe("refresh loop cap", () => {
     });
     expect(prices).toBe(1);
     expect(weather).toBe(0);
+  });
+
+  it("traces refresh_unavailable when the host directory is missing and does not create it", async () => {
+    const missing = path.join(os.tmpdir(), `missing-maize-${Date.now()}`);
+    fs.rmSync(missing, { recursive: true, force: true });
+    let called = false;
+    const dir = tempDir("trace-missing-");
+    const tracer = createTracer("abcdef12-0000-4000-8000-000000000003", dir, { county: "Kirinyaga", mode: "advise" });
+    const ctx: RunContext = {
+      tracer,
+      agent: "Planner",
+      queryCache: new Map(),
+      dataSource: () => null,
+      markSampleFallback: () => undefined,
+      markNarrativeFallback: () => undefined,
+      modelAnswer: { provider: null, model: null },
+    };
+    const report = await runContext.run(ctx, () => refreshWeather("Kirinyaga", {
+      maizeDir: missing,
+      stateFile: path.join(dir, "state.json"),
+      fetch: async () => {
+        called = true;
+        return bytesResponse(Buffer.from("{}"));
+      },
+    }));
+    expect(called).toBe(false);
+    expect(report.status).toBe("fallback");
+    expect(report.unavailable).toBe(true);
+    expect(report.stored).toBe(0);
+    expect(fs.existsSync(missing)).toBe(false);
+    const unavailable = tracer.events.find((event) => event.action === "refresh_unavailable");
+    expect(unavailable?.output_summary).toMatch(/^refresh_unavailable: /);
+    const state = caseState();
+    state.last_decision = {
+      action: "reject",
+      reasons: ["freshness"],
+      notes: [],
+      target_agents: ["StorageWeatherAnalyst"],
+      confidence: 0.4,
+    };
+    await continueAfterCritique("refresh", state, 1, {
+      weather: async () => report,
+    });
+    expect(state.refresh_limits).toEqual([`refresh_unavailable: ${report.detail}`]);
+    tracer.finish();
+  });
+
+  it("skips the network when refresh is disabled or the last success is inside the TTL", async () => {
+    let called = 0;
+    const fetchImpl: FetchLike = async () => {
+      called += 1;
+      return bytesResponse(Buffer.from("{}"));
+    };
+    const off = await refreshKamis({ enabled: false, fetch: fetchImpl, pauseMs: 0 });
+    expect(called).toBe(0);
+    expect(off.status).toBe("skipped");
+    expect(off.detail).toContain("REFRESH_ENABLED is false");
+
+    const stateFile = path.join(tempDir("refresh-ttl-"), "refresh_state.json");
+    const now = new Date("2026-10-24T12:00:00Z");
+    recordRefreshSuccess("kamis", now, stateFile);
+    const recent = await refreshKamis({
+      stateFile,
+      now,
+      ttlMinutes: 360,
+      pauseMs: 0,
+      fetch: fetchImpl,
+    });
+    expect(called).toBe(0);
+    expect(recent.status).toBe("skipped");
+    expect(recent.detail).toContain("REFRESH_TTL_MINUTES (360)");
+
+    const maizeDir = tempDir("refresh-old-");
+    const stale = await refreshWeather("Kirinyaga", {
+      maizeDir,
+      stateFile,
+      ttlMinutes: 360,
+      now: () => new Date(now.getTime() + 361 * 60_000),
+      fetch: async () => {
+        called += 1;
+        return bytesResponse(fs.readFileSync(meteoFixture));
+      },
+    });
+    expect(called).toBe(1);
+    expect(stale.status).toBe("success");
+  });
+
+  it("refuses to overwrite a fixture or the sample directory", () => {
+    const fixtures = path.join(projectRoot(), "data", "fixtures");
+    const sample = path.join(projectRoot(), "data", "sample");
+    const before = fs.readFileSync(path.join(fixtures, "dirty_market.json"));
+    expect(hostDirectoryProblem(fixtures)).toMatch(/Refusing to write/);
+    expect(hostDirectoryProblem(sample)).toMatch(/Refusing to write/);
+    expect(() => upsertPriceFile([], fixtures)).toThrow(/Refusing to write/);
+    expect(fs.readFileSync(path.join(fixtures, "dirty_market.json")).equals(before)).toBe(true);
+    expect(fs.existsSync(path.join(fixtures, "kamis_dry_maize.csv"))).toBe(false);
+  });
+});
+
+describe("mixed price window", () => {
+  it("states that a span longer than 21 days blends a stale quote into the band", () => {
+    const note = mixedAgeNote("2026-09-15", "2026-10-18");
+    expect(note).toContain("Mixed-age prices");
+    expect(note).toContain("33 days");
+    expect(note).toContain("longer than 21 days");
+    expect(mixedAgeNote("2026-10-16", "2026-10-20")).toBeNull();
   });
 });

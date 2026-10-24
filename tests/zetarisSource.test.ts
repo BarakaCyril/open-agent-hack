@@ -4,6 +4,7 @@ import {
   cachedRows,
   checkZetarisTables,
   evidenceLabel,
+  isJwtExpired,
   loginAndGetFreshToken,
   maizeFrom,
   resolveDataSource,
@@ -98,6 +99,8 @@ describe("Zetaris token refresh", () => {
     ZETARIS_ORG_ID: "org-test",
     ZETARIS_ADMIN_EMAIL: "",
     ZETARIS_ADMIN_PASSWORD: "",
+    ZETARIS_USERNAME: "",
+    ZETARIS_PASSWORD: "",
     METERLESS_BASE_URL: "http://127.0.0.1:8088/v1",
     METERLESS_RUNTIME_TOKEN: "test-token",
     METERLESS_MODEL: "meterless/auto",
@@ -112,6 +115,8 @@ describe("Zetaris token refresh", () => {
     KAMIS_MAX_PAGES: 2,
     KAMIS_PER_PAGE: 100,
     ZETARIS_MAIZE_DIR: "/tmp/maize",
+    REFRESH_ENABLED: true,
+    REFRESH_TTL_MINUTES: 360,
     ...overrides,
   });
 
@@ -145,5 +150,37 @@ describe("Zetaris token refresh", () => {
       if (previousToken === undefined) delete process.env.ZETARIS_API_KEY;
       else process.env.ZETARIS_API_KEY = previousToken;
     }
+  });
+
+  it("uses basic auth on the v1.0 login route and keeps an opaque API key", async () => {
+    const header = Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url");
+    const expired = Buffer.from(JSON.stringify({ exp: 1 })).toString("base64url");
+    const current = Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600 })).toString("base64url");
+    expect(isJwtExpired("opaque-api-key")).toBe(false);
+    expect(isJwtExpired(`${header}.${expired}.sig`)).toBe(true);
+    expect(isJwtExpired(`${header}.${current}.sig`)).toBe(false);
+
+    const previousToken = process.env.ZETARIS_API_KEY;
+    const fetchMock = vi.fn(async () => Response.json({ idToken: "fresh.jwt.token" }));
+    vi.stubGlobal("fetch", fetchMock);
+    let result: { token: string; orgId: string } | null = null;
+    try {
+      result = await loginAndGetFreshToken(config({
+        ZETARIS_REST_URL: "http://zetaris.test/api/v1.0",
+        ZETARIS_USERNAME: "operator@example.test",
+        ZETARIS_PASSWORD: "configured-test-password",
+      }));
+    } finally {
+      if (previousToken === undefined) delete process.env.ZETARIS_API_KEY;
+      else process.env.ZETARIS_API_KEY = previousToken;
+    }
+    expect(result?.token).toBe("fresh.jwt.token");
+    expect(result?.orgId).toBe("org-test");
+    const [url, options] = fetchMock.mock.calls[0] ?? [];
+    expect(url).toBe("http://zetaris.test/api/v1.0/auth/login");
+    expect((options as RequestInit).method).toBe("GET");
+    const headers = (options as RequestInit).headers as Record<string, string>;
+    expect(headers["X-Org-ID"]).toBe("org-test");
+    expect(headers.Authorization).toBe(`Basic ${Buffer.from("operator@example.test:configured-test-password").toString("base64")}`);
   });
 });

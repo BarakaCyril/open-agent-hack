@@ -1,7 +1,7 @@
 import { chat } from "../adapters/meterless.js";
 import { loadConfig } from "../config.js";
 import type { CaseState, Claim, CriticDecision, CriticReason } from "../schemas.js";
-import { daysBetween, latestClaim } from "../orchestration/state.js";
+import { MIXED_PRICE_WINDOW_DAYS, daysBetween, latestClaim, mixedAgeNote } from "../orchestration/state.js";
 import { traceEvent } from "../tracing.js";
 
 const ESCALATE = new Set<CriticReason>(["coverage", "farmer_limits", "missing_input"]);
@@ -64,9 +64,10 @@ export function judgeClaims(input: JudgeInput): CriticDecision {
     }
     const oldest = str(market, "oldest_date");
     const latest = str(market, "latest_date");
-    if (oldest && latest && daysBetween(oldest, latest) > 21) {
+    // Longer than MIXED_PRICE_WINDOW_DAYS means the band blends a stale quote with a current one.
+    if (oldest && latest && daysBetween(oldest, latest) > MIXED_PRICE_WINDOW_DAYS) {
       reasons.push("freshness");
-      notes.push(`The price window runs from ${oldest} to ${latest}, which mixes stale quotes into the band.`);
+      notes.push(mixedAgeNote(oldest, latest) ?? `The price window runs from ${oldest} to ${latest}.`);
       targets.add("MarketAnalyst");
     }
     if (latest && daysBetween(latest, input.today) > staleDays) {

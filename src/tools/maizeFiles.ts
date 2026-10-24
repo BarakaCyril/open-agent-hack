@@ -97,6 +97,26 @@ function samplePrices(): KamisRow[] {
   return readPrices(path.join(projectRoot(), "data", "sample", "kamis_dry_maize.csv"));
 }
 
+/** Missing, read-only, or a path inside the sample or fixture trees. Never creates the directory. */
+export function hostDirectoryProblem(directory: string): string | null {
+  const resolved = path.resolve(directory);
+  const protectedRoots = ["fixtures", "sample"].map((name) => path.resolve(projectRoot(), "data", name));
+  for (const root of protectedRoots) {
+    if (resolved === root || resolved.startsWith(`${root}${path.sep}`)) {
+      return `Refusing to write fixtures or sample data: ${directory}`;
+    }
+  }
+  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
+    return `Zetaris maize directory is not available: ${directory}`;
+  }
+  try {
+    fs.accessSync(resolved, fs.constants.W_OK);
+  } catch {
+    return `Zetaris maize directory is not writable: ${directory}`;
+  }
+  return null;
+}
+
 function sampleWeather(): WeatherSeries[] {
   const file = path.join(projectRoot(), "data", "sample", "weather.json");
   const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as { series?: WeatherSeries[] };
@@ -108,10 +128,9 @@ function sampleWeather(): WeatherSeries[] {
  * reads this file; there is no INSERT into the view.
  */
 export function upsertPriceFile(incoming: KamisRow[], directory: string): number {
+  const problem = hostDirectoryProblem(directory);
+  if (problem) throw new Error(problem);
   const destination = path.join(directory, "kamis_dry_maize.csv");
-  if (!fs.existsSync(directory)) {
-    throw new Error(`Zetaris maize directory is not available: ${directory}`);
-  }
   const existing = fs.existsSync(destination) ? readPrices(destination) : samplePrices();
   const byKey = new Map(existing.map((row) => [priceKey(row), row]));
   let stored = 0;
@@ -145,10 +164,9 @@ function readWeather(file: string): WeatherSeries[] | null {
  * Older open-meteo issues stay in the file.
  */
 export function upsertWeatherFile(incoming: WeatherSeries, directory: string): number {
+  const problem = hostDirectoryProblem(directory);
+  if (problem) throw new Error(problem);
   const destination = path.join(directory, "weather.json");
-  if (!fs.existsSync(directory)) {
-    throw new Error(`Zetaris maize directory is not available: ${directory}`);
-  }
   const existing = fs.existsSync(destination) ? readWeather(destination) : sampleWeather();
   if (!existing) throw new Error("weather.json is not a series file and was left unchanged");
   const county = normalizeCounty(incoming.county).toLowerCase();

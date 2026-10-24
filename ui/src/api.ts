@@ -93,21 +93,41 @@ export interface TraceEvent {
   model: string;
 }
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  // Try via proxy /api first, and if that fails, try direct localhost:8000
-  try {
-    const res = await fetch(`${BASE_URL}${path}`, options);
-    if (res.ok) return (await res.json()) as T;
-  } catch {
-    // Attempt direct port 8000 fallback
-    const directRes = await fetch(`http://localhost:8000${path}`, options);
-    if (!directRes.ok) {
-      const err = await directRes.text();
-      throw new Error(err || `HTTP ${directRes.status}`);
+async function readBody<T>(res: Response): Promise<T> {
+  const text = await res.text();
+  if (!res.ok) {
+    let message = text || `HTTP ${res.status}`;
+    try {
+      const body = JSON.parse(text) as { error?: string };
+      if (body.error) message = body.error;
+    } catch {
+      // The error body was not JSON.
     }
-    return (await directRes.json()) as T;
+    throw new Error(message);
   }
-  throw new Error(`Failed to fetch ${path}`);
+  return JSON.parse(text) as T;
+}
+
+async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  try {
+    return await readBody<T>(await fetch(`${BASE_URL}${path}`, options));
+  } catch (error) {
+    if (error instanceof TypeError) {
+      return readBody<T>(await fetch(`http://localhost:8000${path}`, options));
+    }
+    throw error;
+  }
+}
+
+export function formatTraceLine(event: TraceEvent): string {
+  const date = new Date(event.timestamp);
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mm = String(date.getMinutes()).padStart(2, "0");
+  const ss = String(date.getSeconds()).padStart(2, "0");
+  const clock = Number.isNaN(date.getTime()) ? "00:00:00" : `${hh}:${mm}:${ss}`;
+  const target = event.target_agent ?? "-";
+  const summary = event.output_summary.trim().replace(/[.?!]+$/u, "") || "-";
+  return `[${clock}] ${event.agent_name} -> ${target} | ${event.action} | ${event.status} | ${summary}.`;
 }
 
 export const api = {
@@ -152,12 +172,16 @@ export const api = {
     });
   },
 
-  runCase: async (payload: RunCaseRequest): Promise<RunCaseResponse> => {
-    return request<RunCaseResponse>('/run', {
+  startRun: async (payload: RunCaseRequest): Promise<{ trace_id: string }> => {
+    return request<{ trace_id: string }>('/run/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
+  },
+
+  runResult: async (traceId: string): Promise<RunCaseResponse> => {
+    return request<RunCaseResponse>(`/run/${traceId}/result`);
   },
 
   subscribeTraceEvents: (
@@ -165,32 +189,36 @@ export const api = {
     onEvent: (event: TraceEvent) => void,
     onEnd: () => void
   ): (() => void) => {
-    let source: EventSource;
-    try {
-      source = new EventSource(`${BASE_URL}/run/${traceId}/events`);
-    } catch {
-      source = new EventSource(`http://localhost:8000/run/${traceId}/events`);
-    }
-
-    source.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        onEvent(data);
-      } catch {
-        // ignore
-      }
-    };
-
-    source.addEventListener('end', () => {
-      onEnd();
-      source.close();
-    });
-
-    source.onerror = () => {
-      source.close();
+    let source: EventSource | null = null;
+    let closed = false;
+    let sawEvent = false;
+    const finish = () => {
+      if (closed) return;
+      closed = true;
+      source?.close();
       onEnd();
     };
-
-    return () => source.close();
+    const open = (url: string, fallback: string | null) => {
+      source = new EventSource(url);
+      source.onmessage = (e) => {
+        sawEvent = true;
+        try {
+          onEvent(JSON.parse(e.data) as TraceEvent);
+        } catch {
+          // Ignore a malformed event frame.
+        }
+      };
+      source.addEventListener('end', finish);
+      source.onerror = () => {
+        source?.close();
+        if (!closed && !sawEvent && fallback) open(fallback, null);
+        else finish();
+      };
+    };
+    open(`${BASE_URL}/run/${traceId}/events`, `http://localhost:8000/run/${traceId}/events`);
+    return () => {
+      closed = true;
+      source?.close();
+    };
   },
 };

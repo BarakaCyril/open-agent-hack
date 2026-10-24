@@ -146,6 +146,16 @@ describe("critic loop caps", () => {
     });
     expect(ageThree.action).toBe("approve");
 
+    const mixed = judgeClaims({
+      today: "2026-10-22",
+      bags: 20,
+      storage: "open_bags",
+      market: claim("MarketAnalyst", { ...cleanMarket.payload, oldest_date: "2026-09-20", latest_date: "2026-10-20" }),
+      storageClaim: cleanStorage,
+    });
+    expect(mixed.reasons).toContain("freshness");
+    expect(mixed.notes.some((note) => note.includes("Mixed-age prices") && note.includes("30 days"))).toBe(true);
+
     const oldForecast = judgeClaims({
       today: "2026-10-22",
       bags: 20,

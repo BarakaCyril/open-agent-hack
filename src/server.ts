@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import Fastify, { type FastifyInstance } from "fastify";
 import {
   activeChatTarget,
@@ -14,7 +15,7 @@ import {
 import { loadConfig, redact } from "./config.js";
 import { NotImplementedError } from "./errors.js";
 import { runCase } from "./orchestration/graph.js";
-import { RunRequestSchema } from "./schemas.js";
+import { RunRequestSchema, type RunResponse } from "./schemas.js";
 import { followTrace, hasTrace } from "./tracing.js";
 import { checkZetarisTables } from "./adapters/zetaris.js";
 
@@ -143,6 +144,34 @@ export function buildServer(): FastifyInstance {
       closed = true;
       subscription.close();
     });
+  });
+
+  const liveRuns = new Map<string, Promise<RunResponse>>();
+
+  app.post("/run/start", async (request, reply) => {
+    const parsed = RunRequestSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({
+        error: "invalid request",
+        details: parsed.error.issues.map((issue) => `${issue.path.join(".") || "body"}: ${issue.message}`),
+      });
+    }
+    const traceId = randomUUID();
+    const job = runCase(parsed.data, traceId);
+    liveRuns.set(traceId, job);
+    job.catch(() => undefined);
+    return { trace_id: traceId };
+  });
+
+  app.get("/run/:traceId/result", async (request, reply) => {
+    const traceId = (request.params as { traceId?: string }).traceId ?? "";
+    const job = liveRuns.get(traceId);
+    if (!job) return reply.code(404).send({ error: "run not found" });
+    try {
+      return await job;
+    } catch (error) {
+      return reply.code(500).send({ error: redact(error instanceof Error ? error.message : "run failed") });
+    }
   });
 
   app.post("/run", async (request, reply) => {

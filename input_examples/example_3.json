@@ -3,5 +3,6 @@
   "county": "Garissa",
   "bags": 20,
   "storage": "open_bags",
-  "mode": "advise"
+  "mode": "advise",
+  "fixture": "dirty"
 }

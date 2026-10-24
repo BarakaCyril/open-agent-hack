@@ -23,6 +23,18 @@ export function addDays(isoDate: string, days: number): string {
   return new Date(base + days * 86_400_000).toISOString().slice(0, 10);
 }
 
+/**
+ * A price window is mixed when the oldest quote and the newest quote are more than 21 days apart.
+ * The percentile band then blends a stale quote with a current one, so it is not one market moment.
+ */
+export const MIXED_PRICE_WINDOW_DAYS = 21;
+
+export function mixedAgeNote(oldest: string, latest: string): string | null {
+  const span = daysBetween(oldest, latest);
+  if (!Number.isFinite(span) || span <= MIXED_PRICE_WINDOW_DAYS) return null;
+  return `Mixed-age prices: the quotes used here run from ${oldest} to ${latest} (${span} days). A window longer than 21 days blends a stale quote into the same band as a current one.`;
+}
+
 export function freshnessLabel(asOf: string, today: string, staleDays = 3): string {
   const age = daysBetween(asOf, today);
   if (!Number.isFinite(age)) return "unknown";
@@ -40,8 +52,15 @@ export function describeEvidence(
   staleDays = 3,
 ): { source: string; as_of: string; freshness: string } {
   const dated = /^\d{4}-\d{2}-\d{2}/u.test(asOf) ? asOf.slice(0, 10) : "";
+  const fixture = origin.startsWith("fixture:") || route.startsWith("fixture:");
+  const synthetic = /synthetic/iu.test(origin) || /synthetic/iu.test(route);
+  const realOrigin = origin === "kamis" || origin === "open-meteo" || origin === "market-news";
+  let named = origin;
+  if (fixture && !origin.startsWith("fixture:")) named = `fixture:${route}`;
+  else if (realOrigin && (synthetic || fixture)) named = synthetic ? "synthetic" : "fixture";
+  const source = named.startsWith("fixture:") ? named : `${named} via ${route}`;
   return {
-    source: `${origin} via ${route}`,
+    source,
     as_of: dated || "undated",
     freshness: dated ? freshnessLabel(dated, today, staleDays) : "undated",
   };
@@ -73,6 +92,7 @@ export function createInitialState(request: RunRequest, traceId = randomUUID(), 
     sources: {},
     synthetic_inputs: [],
     narrative_fallback: false,
+    refresh_limits: [],
   };
 }
 

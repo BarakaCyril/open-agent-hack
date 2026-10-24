@@ -66,12 +66,13 @@ export function slopePerDay(points: PricePoint[]): number {
   return numerator / denominator;
 }
 
-export function cleanAndSummarize(points: PricePoint[]): PriceStats {
+export function cleanAndSummarize(points: PricePoint[], options?: { keepOutliers?: boolean }): PriceStats {
   const valid = points.filter((point) => Number.isFinite(point.price) && point.price > 0 && point.date.length >= 10);
   if (valid.length === 0) throw new Error("no price rows");
   const mask = outlierMask(valid.map((point) => point.price));
   const kept = valid.filter((_, index) => !mask[index]);
-  const used = kept.length > 0 ? kept : valid;
+  const retain = options?.keepOutliers === true;
+  const used = retain || kept.length === 0 ? valid : kept;
   const prices = used.map((point) => point.price).sort((a, b) => a - b);
   const ordered = [...used].sort((a, b) => a.date.localeCompare(b.date));
   const latestPoint = ordered[ordered.length - 1];
@@ -82,7 +83,7 @@ export function cleanAndSummarize(points: PricePoint[]): PriceStats {
     p50: quantile(prices, 0.5),
     p90: quantile(prices, 0.9),
     n: used.length,
-    outliersRemoved: valid.length - used.length,
+    outliersRemoved: retain ? 0 : valid.length - used.length,
     outlierCount: mask.filter(Boolean).length,
     latest: latestPoint.price,
     latestDate: latestPoint.date.slice(0, 10),

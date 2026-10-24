@@ -11,6 +11,8 @@ const EnvSchema = z.object({
   ZETARIS_ORG_ID: z.string().min(1),
   ZETARIS_ADMIN_EMAIL: z.string().optional().default(""),
   ZETARIS_ADMIN_PASSWORD: z.string().optional().default(""),
+  ZETARIS_USERNAME: z.string().optional().default(""),
+  ZETARIS_PASSWORD: z.string().optional().default(""),
   METERLESS_BASE_URL: z.string().min(1).default("http://127.0.0.1:8088/v1"),
   METERLESS_RUNTIME_TOKEN: z.string().min(1),
   METERLESS_MODEL: z.string().min(1).default("meterless/auto"),
@@ -27,6 +29,8 @@ const EnvSchema = z.object({
     message: "must be 10, 50, 100, 500, 1500, or 3000",
   }).default(100),
   ZETARIS_MAIZE_DIR: z.string().min(1).default("/home/zetaris/customer-data/shared/maize"),
+  REFRESH_ENABLED: z.enum(["true", "false"]).default("true").transform((value) => value === "true"),
+  REFRESH_TTL_MINUTES: z.coerce.number().int().min(0).max(10_080).default(360),
 });
 
 export type AppConfig = z.infer<typeof EnvSchema>;

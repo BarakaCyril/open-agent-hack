@@ -1,9 +1,11 @@
 export interface RefreshReport {
-  status: "success" | "fallback" | "error";
+  status: "success" | "fallback" | "error" | "skipped";
   fetched: number;
   stored: number;
   rejected: number;
   detail: string;
+  /** The Zetaris host directory was missing, not writable, or protected. */
+  unavailable?: boolean;
 }
 
 export const LIVE_USER_AGENT = "open-agent-maize/0.1 (maize decision support)";

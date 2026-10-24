@@ -50,7 +50,7 @@ The process listens on port 8000.
 The browser talks to Fastify; it must not connect to Zetaris directly. The Vite `/api` proxy forwards UI calls to the backend on port 8000, and the backend sends SQL to the Zetaris REST proxy. Each developer uses a local, untracked `.env` because Docker hostnames, organisation IDs, and credentials differ by machine.
 
 1. Start the Zetaris stack and publish its REST proxy port to the host. Confirm the proxy is reachable at `http://127.0.0.1:3000/api/proxy` (or use the actual host port from that machine's Docker setup).
-2. Copy `.env.example` to `.env`. Set `ZETARIS_REST_URL=http://127.0.0.1:3000/api/proxy`, the organisation ID, and a valid Zetaris API token. If the token expires after 15 minutes, also set `ZETARIS_ADMIN_EMAIL` and `ZETARIS_ADMIN_PASSWORD` for automatic in-memory refresh. Use a dedicated least-privilege account; the app does not include default login credentials or write refreshed tokens to `.env`.
+2. Copy `.env.example` to `.env`. Set `ZETARIS_REST_URL`, the organisation ID, and a valid Zetaris API token. An opaque API key is sent as-is. A JWT is refreshed when it is within a minute of expiry, using `ZETARIS_USERNAME` and `ZETARIS_PASSWORD` (or `ZETARIS_ADMIN_EMAIL` and `ZETARIS_ADMIN_PASSWORD`). On a `/api/v1.0` base URL the refresh is `GET /api/v1.0/auth/login` with basic auth. The app does not write refreshed tokens to `.env`.
 3. From the repo root, run `npm start`. In another terminal run `npm run ui`; open `http://localhost:3001`.
 4. Confirm `http://localhost:8000/zetaris/check` reports all five tables online. The UI's Zetaris inspector uses the same check through `/api/zetaris/check`.
 
@@ -105,11 +105,15 @@ Those views sit in the schema-store container `maize`. The files behind them are
 
 `weather_daily` explodes `series` and each series `days`. `market_news` explodes `items`. `farmer_ledger` explodes `entries`. `storage_loss_rules` keeps the four numeric columns and leaves out `synthetic` and `note`.
 
-A clean clone has `data/sample/` and does not create the remote schema by itself. To reload:
+A clean clone has `data/sample/` and does not create the remote schema by itself. The views read files on the Zetaris host. `ZETARIS_MAIZE_DIR` (default `/home/zetaris/customer-data/shared/maize`) is that directory. To load the five sample files onto a host directory that already exists and is writable:
 
-1. Copy the five files from `data/sample/` onto the host paths above, keeping those file names.
-2. If `MAIZE_FILES` and the `maize` views are already registered, stop there. The filestore reads those paths on each query. Run `npx tsx scripts/check_zetaris_tables.ts` and confirm each table returns a count.
-3. If the organisation has no `maize` container, open `scripts/zetaris_maize_setup.sql` and run each statement on its own in the Zetaris SQL editor. `CREATE LIGHTNING DATABASE` and `CREATE SCHEMASTORE CONTAINER` fail when the name already exists; skip those. Then run the count script.
+```bash
+npm run load:sample
+```
+
+`scripts/load_sample_into_zetaris.ts` copies `kamis_dry_maize.csv`, `weather.json`, `news.json`, `storage_loss_rules.csv`, and `farmer_ledger.json` from `data/sample/` into `ZETARIS_MAIZE_DIR`, keeping those file names. It does not create `/home/zetaris`, and it refuses to write into `data/sample/` or `data/fixtures/`. The Lightning filestore reads those paths on the next query. The views are not insertable.
+
+If `MAIZE_FILES` and the `maize` views are already registered, stop after the copy. Run `npx tsx scripts/check_zetaris_tables.ts` and confirm each table returns a count. If the organisation has no `maize` container, open `scripts/zetaris_maize_setup.sql` and run each statement on its own in the Zetaris SQL editor. `CREATE LIGHTNING DATABASE` and `CREATE SCHEMASTORE CONTAINER` fail when the name already exists; skip those. Then run the count script.
 
 Do not point `ZETARIS_REST_URL` at port 8889.
 
@@ -122,17 +126,19 @@ Do not point `ZETARIS_REST_URL` at port 8889.
 | `npx tsx scripts/refresh_kamis.ts` | `$ZETARIS_MAIZE_DIR/kamis_dry_maize.csv` | `maize.kamis_prices` |
 | `npx tsx scripts/refresh_weather.ts <county>` | `$ZETARIS_MAIZE_DIR/weather.json` | `maize.weather_daily` |
 
-`ZETARIS_MAIZE_DIR` defaults to `/home/zetaris/customer-data/shared/maize`. The filestore reads those paths on the next query, which is the same route as the one-time copy in the setup above. Rows are upserted: a repeated market quote replaces that quote, and an older date stays. A new Open-Meteo issue for a county replaces that county's synthetic series and the same issue date. Other counties, and older Open-Meteo issue dates, stay in the file. If the host directory is not mounted here, the script does not create it and does not report the rows as stored. The analysts then keep the rows already in Zetaris or, when that read fails in sample mode, the files in `data/sample/`. Those sample files are not overwritten.
+`ZETARIS_MAIZE_DIR` defaults to `/home/zetaris/customer-data/shared/maize`. The filestore reads those paths on the next query, which is the same route as `npm run load:sample`. Rows are upserted: a repeated market quote replaces that quote, and an older date stays. A new Open-Meteo issue for a county replaces that county's synthetic series and the same issue date. Other counties, and older Open-Meteo issue dates, stay in the file. If the host directory is missing or not writable, the script does not create it, does not report the rows as stored, and the trace records `refresh_unavailable: <reason>`. That same line is added to the response `limitations`. The analysts then keep the rows already in Zetaris or, when that read fails in sample mode, the files in `data/sample/`. Refresh never writes `data/sample/` or `data/fixtures/`.
 
-The forecast comes from the Open-Meteo forecast API. No API key. Daily fields are `precipitation_sum` and `temperature_2m_mean`. The forecast API has no daily humidity field, so humidity is the mean of that day's hourly `relative_humidity_2m`. Coordinates are looked up in `data/counties.csv` and are OpenStreetMap Nominatim relation centroids (ODbL 1.0). A county that is not in that file is an error. The forecast is not requested with a guessed point. Weather data by [Open-Meteo.com](https://open-meteo.com/), [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+`REFRESH_ENABLED` defaults to true. Set it to `false` and the refresh tools do not call the network. After a successful write, the time is stored per source in `data/cache/refresh_state.json` (gitignored). A later refresh for that source is skipped while the stamp is newer than `REFRESH_TTL_MINUTES` (default 360). The trace action is `refresh_skipped`, with the reason. A skipped refresh is not a new pull, so repeated `/run` calls do not hammer KAMIS or Open-Meteo.
+
+The forecast comes from the Open-Meteo forecast API. No API key. Daily fields are `precipitation_sum` and `temperature_2m_mean`. The forecast API has no daily humidity field, so humidity is the mean of that day's hourly `relative_humidity_2m`. Coordinates are looked up in `data/counties.csv`. A county that is not in that file is an error. The forecast is not requested with a guessed point. Weather data by [Open-Meteo.com](https://open-meteo.com/), licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The county coordinates are © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright), available under the [Open Database Licence (ODbL)](https://opendatacommons.org/licenses/odbl/).
 
 KAMIS prices use the market-page export at `https://kamis.kilimo.go.ke/site/market`: Dry Maize is `product=1`, the entries control is `per_page`, and the Export to Excel control adds `export=excel`. Later pages use the same query with the row offset in the path (`/site/market/100` is the second page when `per_page` is 100). The client sends `User-Agent: open-agent-maize/0.1 (maize decision support)`, waits 2 seconds between requests, and saves raw responses under `data/cache/` (gitignored). `KAMIS_MAX_PAGES` defaults to 2 and `KAMIS_PER_PAGE` defaults to 100 (one of 10, 50, 100, 500, 1500, 3000). `robots.txt` is fetched first. HTTP 404 means the site published no rules, and the export still waits 2 seconds. A failed robots fetch stops the run. KAMIS terms of use are unconfirmed.
 
 The sheet shows wholesale and retail per kilogram. Stored prices are that figure times 90, because the price tools keep white maize only when `unit_kg` is 90. Supply volume is stored as the number in the sheet. A row is dropped when wholesale or retail is blank, the county or market is the site's `test` placeholder, or the cells do not match the row schema. The run logs how many rows were rejected.
 
-`STALE_DAYS` defaults to 3. RiskCritic rejects a claim when the newest price date or the forecast issue date is older than that. A price window longer than 21 days is still treated as mixed. On that rejection the planner calls `refresh_kamis` for prices and `refresh_weather` for the county forecast, then the analysts query Zetaris again. The SQL cache is cleared only after a file is actually written. The loop allows 2 refreshes. Each one is a trace line `refresh_kamis` or `refresh_weather` with rows fetched, rows stored, and status. A failed refresh keeps the previous rows. Evidence then shows that older `as_of`, not the time of the failed attempt.
+`STALE_DAYS` defaults to 3. RiskCritic rejects a claim when the newest price date or the forecast issue date is older than that. A price window is mixed when the oldest quote and the newest quote are more than 21 days apart. The percentile band then blends a stale quote with a current one, so it is not one market moment. The response states that in `limitations` and in `reasoning_trace_summary` as mixed-age prices, including the two dates and the span. On a freshness rejection the planner calls `refresh_kamis` for prices and `refresh_weather` for the county forecast, then the analysts query Zetaris again, unless the TTL or `REFRESH_ENABLED=false` skips the network. The SQL cache is cleared only after a file is actually written. The loop allows 2 refreshes. Each network pull is a trace line `refresh_kamis` or `refresh_weather` with rows fetched, rows stored, and status. A failed refresh keeps the previous rows. Evidence then shows that older `as_of`, not the time of the failed attempt.
 
-Claim evidence is `<origin> via zetaris:<table>` or `<origin> via sample:<file>`. Price origin is `kamis`. Forecast origin is the series source, such as `open-meteo` or `synthetic-forecast`. `as_of` is the quote date or the forecast issue date. Freshness is `same-day`, `Nd`, or `stale-Nd` from `STALE_DAYS`. News and storage rules that have no observation date are `undated`.
+Claim evidence is `<origin> via zetaris:<table>` or `<origin> via sample:<file>`. Price origin is `kamis` only for the KAMIS extract. Forecast origin is the series source, such as `open-meteo` or `synthetic-forecast`. A planted critic case is selected with `"fixture": "dirty"` (see `input_examples/example_3.json`) and its evidence source is `fixture:data/fixtures/dirty_market.json`. Synthetic news stays `synthetic-news`, and synthetic storage rules stay `synthetic-storage-rules`. Those origins are not relabelled as KAMIS, Open-Meteo, or a real market notice. `as_of` is the quote date or the forecast issue date. Freshness is `same-day`, `Nd`, or `stale-Nd` from `STALE_DAYS`. News and storage rules that have no observation date are `undated`.
 
 ## Usage
 
@@ -148,7 +154,7 @@ curl -s -X POST http://localhost:8000/run \
 | --- | --- |
 | `input_examples/example_1.json` | Kirinyaga, open bags, rain on the synthetic forecast, prices rising, a cash need. |
 | `input_examples/example_2.json` | Same county, dry store. |
-| `input_examples/example_3.json` | Garissa: one white-maize quote, plus a stale forecast with a 400 mm day. |
+| `input_examples/example_3.json` | Garissa: one white-maize quote, plus a stale forecast with a 400 mm day. `"fixture": "dirty"` adds the planted outlier and yellow-maize news item from `data/fixtures/dirty_market.json`. |
 | `input_examples/example_4.json` | Recheck. The synthetic ledger has a prior HOLD from 12 Oct 2026, when 7-day rain was 4 mm. |
 
 `output_examples/` does not contain fabricated responses. Save a real `POST /run` body there if you want a fixture.
@@ -170,7 +176,7 @@ curl -s -X POST http://localhost:8000/run \
 | Placeholder token `rt-local` | Refused before any request. Health reports unauthorized. |
 | Fewer than 3 fresh white-maize quotes | `no_recommendation`, with the row count and a question. |
 | Critic rejection | Back to the owning analyst. Maximum 2 revisions. |
-| Stale prices or forecast (`STALE_DAYS`, default 3) | RiskCritic rejects. The planner calls the KAMIS and Open-Meteo refresh tools, then the analysts query again. Maximum 2 refreshes. A failed refresh keeps the previous rows and their real age. |
+| Stale prices or forecast (`STALE_DAYS`, default 3), or a price window longer than 21 days | RiskCritic rejects. The planner calls the KAMIS and Open-Meteo refresh tools, then the analysts query again, unless `REFRESH_ENABLED` is false or the last success is inside `REFRESH_TTL_MINUTES`. Maximum 2 refreshes. A failed refresh keeps the previous rows and their real age. A missing or read-only host directory is `refresh_unavailable` in the trace and in `limitations`. A mixed window is stated as mixed-age prices. |
 | Rounds | Maximum 3, then `no_recommendation` if still unapproved. |
 | H-MEM write without a source | Rejected by construction. Farmer records always carry `source: farmer:<id>`. |
 
@@ -178,7 +184,13 @@ Every external call has a timeout. The revision loop is capped. A run returns or
 
 ## Data and licensing
 
-See `data/README.md`. The KAMIS-style price file has 51 data rows and was already in the repo (export note: 14 October 2026). KAMIS terms are unconfirmed. A live pull uses the market-page Excel export, throttled to one request every 2 seconds. Weather, storage-loss rules, news, and the farmer ledger in `data/sample/` are synthetic and marked as such. A live forecast is Open-Meteo (CC BY 4.0; attribution: Weather data by Open-Meteo.com) at the Nominatim county centroids in `data/counties.csv` (ODbL 1.0).
+See `data/README.md`. The KAMIS-style price file has 50 data rows and was already in the repo (export note: 14 October 2026), apart from one planted 9,999 KES quote that now lives only in `data/fixtures/dirty_market.json`. KAMIS terms of use for `https://kamis.kilimo.go.ke/site/market` are unconfirmed. Do not assume a redistribution licence. A live pull uses the market-page Excel export, throttled to one request every 2 seconds. Weather, storage-loss rules, news, and the farmer ledger in `data/sample/` are synthetic and marked as such. They are never labelled as KAMIS, Open-Meteo, or a gazette notice.
+
+Attribution:
+
+- Weather data by [Open-Meteo.com](https://open-meteo.com/), licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+- County coordinates in `data/counties.csv` are © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright), available under the [Open Database Licence (ODbL)](https://opendatacommons.org/licenses/odbl/).
+- KAMIS (`https://kamis.kilimo.go.ke/site/market`) is the price source. Terms of use are unconfirmed.
 
 ## Limitations
 
@@ -191,7 +203,7 @@ See `data/README.md`. The KAMIS-style price file has 51 data rows and was alread
 
 ## Pre-existing components
 
-- `data/sample/kamis_dry_maize.csv`, described as a KAMIS sample exported on 14 October 2026. It was not modified.
+- `data/sample/kamis_dry_maize.csv`, described as a KAMIS sample exported on 14 October 2026. The planted 9,999 KES quote was moved to `data/fixtures/dirty_market.json` so the sample file is not presented as a real KAMIS outlier.
 - `data/sample/records_sample.json`, `data/sample/metadata.csv`, and `data/download_data.py` were already here. The download script is still a stub. The empty records file is unused.
 - `memory/hmem/` is the H-MEM spec and reference. It is not modified. The project implementation is `src/hmem`.
 

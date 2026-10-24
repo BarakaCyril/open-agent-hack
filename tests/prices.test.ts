@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { loadPriceRows, isWhiteMaizeBag } from "../src/adapters/sampleData.js";
+import { loadDirtyFixture } from "../src/tools/dirtyFixture.js";
 import { cleanAndSummarize, projectPriceBand, quantile } from "../src/tools/prices.js";
 
 describe("price stats", () => {
@@ -41,12 +42,17 @@ describe("price stats", () => {
     expect(forward.p10).toBeLessThan(forward.p90);
   });
 
-  it("drops the 9999 Kirinyaga quote in the sample file", () => {
-    const points = loadPriceRows()
+  it("keeps the planted 9999 quote in the fixture and out of the KAMIS sample", () => {
+    const sample = loadPriceRows();
+    expect(sample.some((row) => row.wholesale_price_kes === 9999)).toBe(false);
+    const fixture = loadDirtyFixture();
+    expect(fixture.prices.some((row) => row.county === "Kirinyaga" && row.wholesale_price_kes === 9999)).toBe(true);
+    expect(fixture.news.some((item) => item.maize_type === "yellow" && item.id.startsWith("fixture-"))).toBe(true);
+    const points = sample
       .filter((row) => row.county === "Kirinyaga" && isWhiteMaizeBag(row) && row.market_date >= "2026-10-08")
       .map((row) => ({ date: row.market_date, price: row.wholesale_price_kes }));
+    points.push({ date: "2026-10-18", price: 9999 });
     const stats = cleanAndSummarize(points);
-    expect(points.some((point) => point.price === 9999)).toBe(true);
     expect(stats.outliersRemoved).toBe(1);
     expect(stats.p90).toBeLessThan(4000);
     expect(stats.n).toBe(10);

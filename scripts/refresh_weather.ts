@@ -10,4 +10,4 @@ if (!county) {
 loadConfig();
 const report = await refreshWeather(county);
 console.log(`${report.status}: fetched ${report.fetched}, stored ${report.stored}, rejected ${report.rejected}. ${report.detail}`);
-process.exit(report.status === "success" ? 0 : 1);
+process.exit(report.status === "success" || report.status === "skipped" ? 0 : 1);

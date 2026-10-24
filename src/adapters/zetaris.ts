@@ -22,48 +22,76 @@ let breakerTrippedUntil = 0;
 let inMemoryZetarisToken: string | null = null;
 let inMemoryZetarisOrgId: string | null = null;
 export function isJwtExpired(token: string): boolean {
+  const parts = token.split(".");
+  if (parts.length !== 3 || !parts[1]) return false;
   try {
-    const parts = token.split(".");
-    if (parts.length < 2) return true;
-    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
-    if (payload.exp && typeof payload.exp === "number") {
-      return Date.now() >= (payload.exp * 1000 - 60_000);
-    }
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as { exp?: unknown };
+    if (typeof payload.exp === "number") return Date.now() >= payload.exp * 1000 - 60_000;
   } catch {
-    return true;
+    return false;
   }
   return false;
 }
 
-export async function loginAndGetFreshToken(config: AppConfig): Promise<{ token: string; orgId: string } | null> {
-  const username = config.ZETARIS_ADMIN_EMAIL.trim();
-  const password = config.ZETARIS_ADMIN_PASSWORD;
+function loginIdentity(config: AppConfig): { username: string; password: string } | null {
+  const username = (config.ZETARIS_ADMIN_EMAIL || config.ZETARIS_USERNAME).trim();
+  const password = config.ZETARIS_ADMIN_PASSWORD || config.ZETARIS_PASSWORD;
   if (!username || !password) return null;
-  try {
-    const base = config.ZETARIS_REST_URL.replace(/\/api\/proxy\/?$/i, "").replace(/\/+$/u, "");
-    const loginUrl = `${base}/api/auth/login`;
-    const res = await fetch(loginUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        username,
-        password,
-      }),
-      signal: AbortSignal.timeout(6000),
+  return { username, password };
+}
+
+async function requestFreshToken(config: AppConfig, username: string, password: string): Promise<Response | null> {
+  const rest = config.ZETARIS_REST_URL.replace(/\/+$/u, "");
+  const attempts: Array<{ url: string; init: RequestInit }> = [];
+  if (/\/api\/v1\.0$/i.test(new URL(rest).pathname)) {
+    attempts.push({
+      url: `${rest}/auth/login`,
+      init: {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          "X-Org-ID": config.ZETARIS_ORG_ID,
+          Authorization: `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`,
+        },
+      },
     });
-    if (!res.ok) return null;
-    const data = await res.json() as { idToken?: string; orgId?: number | string };
-    if (data.idToken) {
-      inMemoryZetarisToken = data.idToken;
-      process.env.ZETARIS_API_KEY = data.idToken;
-      const orgIdStr = String(data.orgId || config.ZETARIS_ORG_ID);
-      if (data.orgId) inMemoryZetarisOrgId = orgIdStr;
-      return { token: data.idToken, orgId: orgIdStr };
+  }
+  const stripped = rest.replace(/\/api\/proxy\/?$/i, "");
+  attempts.push({
+    url: `${stripped}/api/auth/login`,
+    init: {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ username, password }),
+    },
+  });
+  for (const attempt of attempts) {
+    try {
+      const response = await fetch(attempt.url, { ...attempt.init, signal: AbortSignal.timeout(6000) });
+      if (response.ok) return response;
+    } catch {
+      // Try the next login shape.
     }
-  } catch {
-    // non-fatal
   }
   return null;
+}
+
+export async function loginAndGetFreshToken(config: AppConfig): Promise<{ token: string; orgId: string } | null> {
+  const identity = loginIdentity(config);
+  if (!identity) return null;
+  try {
+    const res = await requestFreshToken(config, identity.username, identity.password);
+    if (!res) return null;
+    const data = await res.json() as { idToken?: string; orgId?: number | string };
+    if (!data.idToken) return null;
+    inMemoryZetarisToken = data.idToken;
+    process.env.ZETARIS_API_KEY = data.idToken;
+    const orgIdStr = String(data.orgId || config.ZETARIS_ORG_ID);
+    if (data.orgId) inMemoryZetarisOrgId = orgIdStr;
+    return { token: data.idToken, orgId: orgIdStr };
+  } catch {
+    return null;
+  }
 }
 
 export function isBreakerOpen(): boolean {
@@ -250,7 +278,7 @@ async function executeOnce(config: AppConfig, sql: string, limit: number, isRetr
       orgId = fresh.orgId;
     } else {
       throw new RemoteSourceError(
-        "Zetaris token is missing or expired. Set ZETARIS_API_KEY or configure ZETARIS_ADMIN_EMAIL and ZETARIS_ADMIN_PASSWORD for automatic refresh.",
+        "Zetaris token is missing or expired. Set ZETARIS_API_KEY, or set ZETARIS_USERNAME and ZETARIS_PASSWORD for automatic refresh.",
         { retryable: false },
       );
     }

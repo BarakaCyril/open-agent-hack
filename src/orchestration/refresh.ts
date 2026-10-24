@@ -10,8 +10,16 @@ export async function refreshStaleFeeds(state: CaseState, retryCount: number, de
   const targets = state.last_decision?.target_agents ?? [];
   const prices = deps.prices ?? ((retry) => refreshKamis({ retryCount: retry }));
   const weather = deps.weather ?? ((county, retry) => refreshWeather(county, { retryCount: retry }));
-  if (targets.includes("MarketAnalyst")) await prices(retryCount);
-  if (targets.includes("StorageWeatherAnalyst")) await weather(state.request.county, retryCount);
+  if (targets.includes("MarketAnalyst")) noteUnavailable(state, await prices(retryCount));
+  if (targets.includes("StorageWeatherAnalyst")) noteUnavailable(state, await weather(state.request.county, retryCount));
+}
+
+function noteUnavailable(state: CaseState, report: RefreshReport): void {
+  if (!report.unavailable) return;
+  const line = report.detail.startsWith("refresh_unavailable:")
+    ? report.detail
+    : `refresh_unavailable: ${report.detail}`;
+  if (!state.refresh_limits.includes(line)) state.refresh_limits.push(line);
 }
 
 export async function continueAfterCritique(

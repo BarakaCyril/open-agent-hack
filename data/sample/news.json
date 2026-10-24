@@ -33,16 +33,6 @@
       "commodity": "Dry Maize"
     },
     {
-      "id": "n4",
-      "as_of": "2026-10-16",
-      "county": "national",
-      "maize_type": "yellow",
-      "status": "announced",
-      "direction": "up",
-      "headline": "Yellow maize import parcel reported at Mombasa.",
-      "commodity": "Dry Maize"
-    },
-    {
       "id": "n5",
       "as_of": "2026-10-18",
       "county": "Nairobi",

@@ -1,0 +1,44 @@
+{
+  "fixture": "dirty",
+  "disclaimer": "Planted critic cases. These rows are not KAMIS prices and not a gazette notice.",
+  "prices": [
+    {
+      "market_date": "2026-10-18",
+      "county": "Kirinyaga",
+      "market_name": "Fixture Outlier",
+      "commodity": "Dry Maize",
+      "variety": "White Maize",
+      "grade": "planted",
+      "unit_kg": 90,
+      "wholesale_price_kes": 9999,
+      "retail_price_kes": 10500,
+      "volume_bags": 5,
+      "planted_outlier": true
+    },
+    {
+      "market_date": "2026-10-18",
+      "county": "Garissa",
+      "market_name": "Fixture Outlier",
+      "commodity": "Dry Maize",
+      "variety": "White Maize",
+      "grade": "planted",
+      "unit_kg": 90,
+      "wholesale_price_kes": 9999,
+      "retail_price_kes": 10500,
+      "volume_bags": 1,
+      "planted_outlier": true
+    }
+  ],
+  "news": [
+    {
+      "id": "fixture-yellow",
+      "as_of": "2026-10-16",
+      "county": "national",
+      "maize_type": "yellow",
+      "status": "announced",
+      "direction": "up",
+      "headline": "Fixture only: a yellow maize parcel. Not a gazette notice.",
+      "commodity": "Dry Maize"
+    }
+  ]
+}

@@ -6,7 +6,7 @@ import { isWhiteMaizeBag } from "../adapters/sampleData.js";
 import { RunResponseSchema, type CaseState, type RunResponse } from "../schemas.js";
 import { EV_SEED, describeLiquidityPenalty, expectedValue, type EvInput, type EvResult } from "../tools/expectedValue.js";
 import { projectPriceBand, type PriceStats } from "../tools/prices.js";
-import { addDays, daysBetween, freshnessLabel, kes, latestClaim, pct, roundTo } from "../orchestration/state.js";
+import { addDays, daysBetween, freshnessLabel, kes, latestClaim, mixedAgeNote, pct, roundTo } from "../orchestration/state.js";
 import { currentModelIdentity, traceEvent } from "../tracing.js";
 import { isTwoPlainSentences, limitToTwoPlainSentences, plainText } from "../wording.js";
 
@@ -106,7 +106,7 @@ export async function buildNoRecommendation(state: CaseState): Promise<RunRespon
     data_source: resolveDataSource(state.sources) ?? "sample",
     confidence: 0,
     evidence: evidenceFrom(state),
-    reasoning_trace_summary: noRecommendationSummary(state.coverage.note, reason),
+    reasoning_trace_summary: [noRecommendationSummary(state.coverage.note, reason), mixedAgeFrom(state)].filter(Boolean).join(" ").slice(0, 1200),
     what_would_change_this_advice: [
       `A recommendation needs at least ${BLOCKING_ROWS} white-maize quotes for ${state.request.county} in the last ${FRESH_DAYS} days, plus a forecast that is current and physically plausible.`,
     ],
@@ -172,6 +172,7 @@ export async function assemble(state: CaseState): Promise<RunResponse> {
     `Rounds ${state.round}, revisions ${state.revision_counts.total}, refreshes ${state.refresh_counts.total}.`,
     `Computed scored value sell ${kes(ev.sellEv)}, hold ${kes(ev.holdEv)}, split ${kes(ev.splitEv)} KES. Higher scored value: ${ev.best}.`,
     penaltyNote,
+    mixedAgeFrom(state),
     market.statement,
     storage.statement,
   ].filter((part): part is string => Boolean(part)).join(" ");
@@ -334,7 +335,26 @@ function limitationsFor(state: CaseState): string[] {
   if (state.synthetic_inputs.includes("news")) lines.push("News items are synthetic (data/sample/news.json).");
   if (state.synthetic_inputs.includes("ledger")) lines.push("The farmer ledger used here is synthetic (data/sample/farmer_ledger.json).");
   if (state.narrative_fallback) lines.push(wordingFallbackNote());
+  lines.push(...extraLimits(state));
   lines.push("KAMIS licence terms for the price sample are unconfirmed.");
+  return lines;
+}
+
+function mixedAgeFrom(state: CaseState): string | null {
+  const market = latestClaim(state, "MarketAnalyst");
+  const oldest = typeof market?.payload.oldest_date === "string" ? market.payload.oldest_date : "";
+  const latest = typeof market?.payload.latest_date === "string" ? market.payload.latest_date : "";
+  if (!oldest || !latest) return null;
+  return mixedAgeNote(oldest, latest);
+}
+
+function extraLimits(state: CaseState): string[] {
+  const lines = [...state.refresh_limits];
+  const mixed = mixedAgeFrom(state);
+  if (mixed) lines.push(mixed);
+  if (state.request.fixture === "dirty") {
+    lines.push("Planted rows from data/fixtures/dirty_market.json are included. They are not KAMIS prices or a gazette notice.");
+  }
   return lines;
 }
 

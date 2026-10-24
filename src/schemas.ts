@@ -22,6 +22,7 @@ export const RunRequestSchema = z.object({
   offer_per_bag: z.number().positive().optional(),
   cash_need: z.number().nonnegative().optional(),
   mode: z.enum(["advise", "recheck"]),
+  fixture: z.enum(["dirty"]).optional(),
 });
 
 export type RunRequest = z.infer<typeof RunRequestSchema>;
@@ -118,6 +119,7 @@ export const CaseStateSchema = z.object({
   }),
   synthetic_inputs: z.array(z.string()),
   narrative_fallback: z.boolean(),
+  refresh_limits: z.array(z.string()),
 });
 
 export type CaseState = z.infer<typeof CaseStateSchema>;

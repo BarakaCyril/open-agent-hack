@@ -5,8 +5,9 @@ import { clearReadCache } from "../adapters/zetaris.js";
 import type { WeatherSeries } from "../adapters/sampleData.js";
 import { traceEvent } from "../tracing.js";
 import { lookupCounty } from "./counties.js";
-import { upsertWeatherFile } from "./maizeFiles.js";
+import { hostDirectoryProblem, upsertWeatherFile } from "./maizeFiles.js";
 import { LIVE_USER_AGENT, OPEN_METEO_FORECAST, maizeDirectory, type RefreshReport } from "./refreshReport.js";
+import { recordRefreshSuccess, refreshBlockReason, traceRefreshSkipped, traceRefreshUnavailable, type RefreshGateOptions } from "./refreshState.js";
 
 const DailySchema = z.object({
   time: z.array(z.string()),
@@ -37,6 +38,9 @@ export interface WeatherRefreshOptions {
   cacheDir?: string;
   forecastDays?: number;
   retryCount?: number;
+  enabled?: boolean;
+  ttlMinutes?: number;
+  stateFile?: string;
 }
 
 function round1(value: number): number {
@@ -117,8 +121,19 @@ function traceRefresh(report: RefreshReport, county: string, retryCount: number)
   });
 }
 
+function gateOptions(options: WeatherRefreshOptions, now: Date): RefreshGateOptions {
+  return { enabled: options.enabled, ttlMinutes: options.ttlMinutes, stateFile: options.stateFile, now };
+}
+
 export async function refreshWeather(county: string, options: WeatherRefreshOptions = {}): Promise<RefreshReport> {
   const retryCount = options.retryCount ?? 0;
+  const clock = (options.now ?? (() => new Date()))();
+  const source = `weather:${county}`;
+  const blocked = refreshBlockReason(source, gateOptions(options, clock));
+  if (blocked) {
+    traceRefreshSkipped(source, blocked, retryCount, "StorageWeatherAnalyst");
+    return { status: "skipped", fetched: 0, stored: 0, rejected: 0, detail: blocked };
+  }
   const place = lookupCounty(county);
   if (!place) {
     const report: RefreshReport = {
@@ -131,6 +146,21 @@ export async function refreshWeather(county: string, options: WeatherRefreshOpti
     traceRefresh(report, county, retryCount);
     return report;
   }
+  const directory = maizeDirectory(options.maizeDir);
+  const host = hostDirectoryProblem(directory);
+  if (host) {
+    const report: RefreshReport = {
+      status: "fallback",
+      fetched: 0,
+      stored: 0,
+      rejected: 0,
+      detail: host,
+      unavailable: true,
+    };
+    traceRefresh(report, county, retryCount);
+    traceRefreshUnavailable(host, retryCount, "StorageWeatherAnalyst");
+    return report;
+  }
   const days = options.forecastDays ?? 7;
   const url = new URL(OPEN_METEO_FORECAST);
   url.searchParams.set("latitude", String(place.latitude));
@@ -140,7 +170,7 @@ export async function refreshWeather(county: string, options: WeatherRefreshOpti
   url.searchParams.set("timezone", "Africa/Nairobi");
   url.searchParams.set("forecast_days", String(days));
   const fetchImpl = options.fetch ?? fetch;
-  const asOf = (options.now ?? (() => new Date()))().toISOString().slice(0, 10);
+  const asOf = clock.toISOString().slice(0, 10);
   let bodyText = "";
   try {
     const response = await fetchImpl(url.toString(), {
@@ -195,7 +225,6 @@ export async function refreshWeather(county: string, options: WeatherRefreshOpti
     traceRefresh(report, county, retryCount);
     return report;
   }
-  const directory = maizeDirectory(options.maizeDir);
   try {
     const stored = upsertWeatherFile(parsed.series, directory);
     clearReadCache();
@@ -206,17 +235,22 @@ export async function refreshWeather(county: string, options: WeatherRefreshOpti
       rejected: parsed.rejected,
       detail: `Wrote ${place.county} forecast issued ${asOf} from coordinates in data/counties.csv.`,
     };
+    recordRefreshSuccess(source, clock, options.stateFile);
     traceRefresh(report, county, retryCount);
     return report;
   } catch (error) {
+    const detail = error instanceof Error ? error.message : "The forecast was not written.";
+    const unavailable = /not available|not writable|Refusing to write/u.test(detail);
     const report: RefreshReport = {
       status: "fallback",
       fetched: parsed.series.days.length,
       stored: 0,
       rejected: parsed.rejected,
-      detail: error instanceof Error ? error.message : "The forecast was not written.",
+      detail,
+      unavailable,
     };
     traceRefresh(report, county, retryCount);
+    if (unavailable) traceRefreshUnavailable(detail, retryCount, "StorageWeatherAnalyst");
     return report;
   }
 }

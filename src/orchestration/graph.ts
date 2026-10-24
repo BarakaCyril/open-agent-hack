@@ -82,9 +82,8 @@ export async function runBoundedLoop(
   return { approved, escalated };
 }
 
-export async function runCase(request: RunRequest): Promise<RunResponse> {
+export async function runCase(request: RunRequest, traceId = randomUUID()): Promise<RunResponse> {
   const config = loadConfig();
-  const traceId = randomUUID();
   const tracer = createTracer(traceId, config.LOG_DIR, { county: request.county, mode: request.mode });
   try {
   const state = createInitialState(request, traceId);

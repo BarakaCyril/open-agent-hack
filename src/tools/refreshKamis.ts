@@ -4,7 +4,7 @@ import { clearReadCache } from "../adapters/zetaris.js";
 import type { KamisRow } from "../adapters/sampleData.js";
 import { traceEvent } from "../tracing.js";
 import { parseKamisWorkbook } from "./kamisSheet.js";
-import { upsertPriceFile } from "./maizeFiles.js";
+import { hostDirectoryProblem, upsertPriceFile } from "./maizeFiles.js";
 import {
   KAMIS_EXPORT_ORIGIN,
   LIVE_USER_AGENT,
@@ -13,9 +13,10 @@ import {
   positiveInt,
   type RefreshReport,
 } from "./refreshReport.js";
+import { recordRefreshSuccess, refreshBlockReason, traceRefreshSkipped, traceRefreshUnavailable, type RefreshGateOptions } from "./refreshState.js";
 import type { FetchLike } from "./refreshWeather.js";
 
-export interface KamisRefreshOptions {
+export interface KamisRefreshOptions extends RefreshGateOptions {
   fetch?: FetchLike;
   pauseMs?: number;
   maxPages?: number;
@@ -74,8 +75,25 @@ function traceRefresh(report: RefreshReport, retryCount: number): void {
   });
 }
 
+function skipped(detail: string, retryCount: number): RefreshReport {
+  traceRefreshSkipped("kamis", detail, retryCount, "MarketAnalyst");
+  return { status: "skipped", fetched: 0, stored: 0, rejected: 0, detail };
+}
+
+function unavailable(detail: string, retryCount: number): RefreshReport {
+  const report: RefreshReport = { status: "fallback", fetched: 0, stored: 0, rejected: 0, detail, unavailable: true };
+  traceRefresh(report, retryCount);
+  traceRefreshUnavailable(detail, retryCount, "MarketAnalyst");
+  return report;
+}
+
 export async function refreshKamis(options: KamisRefreshOptions = {}): Promise<RefreshReport> {
   const retryCount = options.retryCount ?? 0;
+  const blocked = refreshBlockReason("kamis", options);
+  if (blocked) return skipped(blocked, retryCount);
+  const directory = maizeDirectory(options.maizeDir);
+  const host = hostDirectoryProblem(directory);
+  if (host) return unavailable(host, retryCount);
   const pauseMs = options.pauseMs ?? REQUEST_GAP_MS;
   const perPage = ALLOWED_PAGE_SIZES.includes(options.perPage ?? 0)
     ? options.perPage ?? 100
@@ -160,7 +178,7 @@ export async function refreshKamis(options: KamisRefreshOptions = {}): Promise<R
     return report;
   }
   try {
-    const stored = upsertPriceFile(rows, maizeDirectory(options.maizeDir));
+    const stored = upsertPriceFile(rows, directory);
     clearReadCache();
     const report: RefreshReport = {
       status: failedPages > 0 ? "fallback" : "success",
@@ -171,17 +189,22 @@ export async function refreshKamis(options: KamisRefreshOptions = {}): Promise<R
         ? `${failedPages} export page(s) failed. Valid rows were written. Rejected ${rejected} malformed row(s).`
         : `Rejected ${rejected} malformed row(s).`,
     };
+    if (report.status === "success") recordRefreshSuccess("kamis", options.now ?? new Date(), options.stateFile);
     traceRefresh(report, retryCount);
     return report;
   } catch (error) {
+    const detail = error instanceof Error ? error.message : "Prices were not written.";
+    const hostDown = /not available|not writable|Refusing to write/u.test(detail);
     const report: RefreshReport = {
       status: "fallback",
       fetched: rows.length,
       stored: 0,
       rejected,
-      detail: error instanceof Error ? error.message : "Prices were not written.",
+      detail,
+      unavailable: hostDown,
     };
     traceRefresh(report, retryCount);
+    if (hostDown) traceRefreshUnavailable(detail, retryCount, "MarketAnalyst");
     return report;
   }
 }

@@ -38,7 +38,8 @@ import {
   ProvidersResponse, 
   MeterlessTestResponse, 
   RunCaseResponse, 
-  TraceEvent 
+  TraceEvent,
+  formatTraceLine
 } from './api';
 
 export default function App() {
@@ -62,7 +63,9 @@ export default function App() {
   // Live Deliberation Results
   const [liveResponse, setLiveResponse] = useState<RunCaseResponse | null>(null);
   const [liveEvents, setLiveEvents] = useState<TraceEvent[]>([]);
+  const [liveTraceId, setLiveTraceId] = useState<string | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
+  const logRef = useRef<HTMLDivElement | null>(null);
 
   // Modals / Drawers
   const [showZetarisModal, setShowZetarisModal] = useState<boolean>(false);
@@ -291,11 +294,18 @@ export default function App() {
     ? (isSell ? liveResponse.decision_values_kes.sell : liveResponse.decision_values_kes.hold)
     : (isSell ? immediateRevenue : expectedHoldGross);
 
-  // Trigger REAL Deliberation
+  useEffect(() => {
+    const node = logRef.current;
+    if (node) node.scrollTop = node.scrollHeight;
+  }, [liveEvents]);
+
+  // Trigger REAL Deliberation and follow the same lines the server prints.
   const handleRunDeliberation = async () => {
     setDeliberating(true);
     setApiError(null);
     setLiveEvents([]);
+    setLiveResponse(null);
+    setActiveAgentTab('timeline');
 
     const payload = {
       farmer_id: 'FK-001',
@@ -307,29 +317,23 @@ export default function App() {
       mode: 'advise' as const,
     };
 
+    let closeStream = () => {};
     try {
-      // 1. Call real backend POST /run
-      const res = await api.runCase(payload);
-      setLiveResponse(res);
-
-      // 2. Connect to SSE stream or fetch trace events for real proof
-      const closeStream = api.subscribeTraceEvents(
-        res.trace_id,
-        (event) => {
+      const started = await api.startRun(payload);
+      setLiveTraceId(started.trace_id);
+      const streamDone = new Promise<void>((resolve) => {
+        closeStream = api.subscribeTraceEvents(started.trace_id, (event) => {
           setLiveEvents((prev) => [...prev, event]);
-        },
-        () => {
-          // Stream completed
-        }
-      );
-
-      // Safety disconnect after 10s
-      setTimeout(closeStream, 10000);
-
-    } catch (err: any) {
-      console.warn('Real backend call failed or backend offline:', err);
-      setApiError(err?.message || 'Backend connection failed. Start with npm start on port 8000.');
+        }, resolve);
+      });
+      const res = await api.runResult(started.trace_id);
+      setLiveResponse(res);
+      await Promise.race([streamDone, new Promise((resolve) => setTimeout(resolve, 1500))]);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Backend connection failed. Start with npm start on port 8000.';
+      setApiError(message);
     } finally {
+      closeStream();
       setDeliberating(false);
     }
   };
@@ -812,7 +816,7 @@ export default function App() {
               </div>
 
               <div className="text-xs text-slate-500 font-mono">
-                Trace ID: <span className="text-slate-800 font-semibold">{liveResponse?.trace_id?.slice(0, 13) || 'ee209bc6-3393'}</span>
+                Trace ID: <span className="text-slate-800 font-semibold">{(liveTraceId || liveResponse?.trace_id || "not started").slice(0, 13)}</span>
               </div>
             </div>
 
@@ -831,74 +835,27 @@ export default function App() {
                   <span className="text-[11px] font-mono text-slate-500">Fastify /run/:traceId/events</span>
                 </div>
 
-                <div className="space-y-2.5 font-mono text-xs max-h-[380px] overflow-y-auto">
+                {apiError && (
+                  <div className="p-2.5 rounded-xl bg-red-50 border border-red-200 text-[11px] text-red-800 font-mono">
+                    {apiError}
+                  </div>
+                )}
+
+                <div ref={logRef} className="font-mono text-[11px] leading-5 bg-slate-950 text-slate-100 rounded-xl p-3 max-h-[380px] overflow-y-auto whitespace-pre-wrap">
                   {liveEvents.length > 0 ? (
                     liveEvents.map((evt, idx) => (
-                      <div key={idx} className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-start justify-between">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-emerald-800 font-bold">
-                              {evt.agent_name} {'->'} {evt.target_agent || 'Coordinator'}
-                            </span>
-                            <span className={`text-[10px] px-1.5 py-0.2 rounded font-semibold ${
-                              evt.status === 'success' ? 'bg-emerald-100 text-emerald-800' :
-                              evt.status === 'needs_revision' ? 'bg-amber-100 text-amber-800' :
-                              'bg-slate-200 text-slate-700'
-                            }`}>
-                              {evt.status.toUpperCase()}
-                            </span>
-                          </div>
-                          <p className="text-[11px] text-slate-600 font-body mt-1">
-                            {evt.output_summary || evt.action}
-                          </p>
-                        </div>
-                        <span className="text-[10px] text-slate-400">
-                          {evt.timestamp ? new Date(evt.timestamp).toTimeString().substring(0, 8) : ''}
-                        </span>
+                      <div key={`${evt.timestamp}-${idx}`} className={
+                        evt.status === 'error' ? 'text-red-300' :
+                        evt.status === 'fallback' || evt.status === 'needs_revision' ? 'text-amber-200' :
+                        'text-slate-100'
+                      }>
+                        {formatTraceLine(evt)}
                       </div>
                     ))
                   ) : (
-                    // Default view if no deliberation run yet
-                    <>
-                      <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-start justify-between">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-emerald-700 font-bold">Planner {'->'} MarketAnalyst</span>
-                            <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800">SUCCESS</span>
-                          </div>
-                          <p className="text-[11px] text-slate-600 font-body mt-1">
-                            Dispatching price query for Kirinyaga County white maize across Zetaris federated records.
-                          </p>
-                        </div>
-                        <span className="text-[10px] text-slate-400">12:35:01</span>
-                      </div>
-
-                      <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-start justify-between">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-emerald-700 font-bold">StorageWeatherAnalyst {'->'} RiskCritic</span>
-                            <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-100 text-amber-800">NEEDS_REVISION</span>
-                          </div>
-                          <p className="text-[11px] text-slate-600 font-body mt-1">
-                            Open storage dampness risk 20.4% contradicts initial Hold recommendation under 193 mm rainfall.
-                          </p>
-                        </div>
-                        <span className="text-[10px] text-slate-400">12:35:02</span>
-                      </div>
-
-                      <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-start justify-between">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-emerald-700 font-bold">RiskCritic {'->'} Planner</span>
-                            <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800">REVISION_RESOLVED</span>
-                          </div>
-                          <p className="text-[11px] text-slate-600 font-body mt-1">
-                            Hold rejected due to urgent 20,000 KES liquidity obligation and spoilage risk. Sell recommendation finalized.
-                          </p>
-                        </div>
-                        <span className="text-[10px] text-slate-400">12:35:03</span>
-                      </div>
-                    </>
+                    <span className="text-slate-400">
+                      {deliberating ? 'Waiting for the first trace line...' : 'Run a deliberation to follow the same lines as the server console.'}
+                    </span>
                   )}
                 </div>
               </div>

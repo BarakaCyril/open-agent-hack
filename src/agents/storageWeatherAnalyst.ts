@@ -51,7 +51,8 @@ export async function analyzeStorage(state: CaseState): Promise<void> {
       ? [
           describeEvidence(series?.source || "weather", weatherHit.evidenceSource, asOf, state.today, staleDays),
           describeEvidence(
-            rulesHit.synthetic ? "synthetic-storage-rules" : "storage-loss-rules",
+            // The only rules file is synthetic, and maize.storage_loss_rules drops that column.
+            "synthetic-storage-rules",
             rulesHit.evidenceSource,
             "",
             state.today,
