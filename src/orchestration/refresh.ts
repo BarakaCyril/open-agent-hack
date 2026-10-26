@@ -1,7 +1,7 @@
 import type { CaseState } from "../schemas.js";
 import { refreshKamis } from "../tools/refreshKamis.js";
 import type { RefreshReport } from "../tools/refreshReport.js";
-import { refreshWeather } from "../tools/refreshWeather.js";
+import { traceRefreshSkipped } from "../tools/refreshState.js";
 
 export async function refreshStaleFeeds(state: CaseState, retryCount: number, deps: {
   prices?: (retryCount: number) => Promise<RefreshReport>;
@@ -9,9 +9,18 @@ export async function refreshStaleFeeds(state: CaseState, retryCount: number, de
 } = {}): Promise<void> {
   const targets = state.last_decision?.target_agents ?? [];
   const prices = deps.prices ?? ((retry) => refreshKamis({ retryCount: retry }));
-  const weather = deps.weather ?? ((county, retry) => refreshWeather(county, { retryCount: retry }));
   if (targets.includes("MarketAnalyst")) noteUnavailable(state, await prices(retryCount));
-  if (targets.includes("StorageWeatherAnalyst")) noteUnavailable(state, await weather(state.request.county, retryCount));
+  if (targets.includes("StorageWeatherAnalyst")) {
+    if (deps.weather) noteUnavailable(state, await deps.weather(state.request.county, retryCount));
+    else {
+      traceRefreshSkipped(
+        "weather",
+        "The forecast is live on maize.weather_daily. There is no file refresh.",
+        retryCount,
+        "StorageWeatherAnalyst",
+      );
+    }
+  }
 }
 
 function noteUnavailable(state: CaseState, report: RefreshReport): void {

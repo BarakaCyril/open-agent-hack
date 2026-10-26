@@ -34,9 +34,7 @@ export async function loadPrior(state: CaseState): Promise<void> {
   } else {
     const ledger = await readFarmerLedger(state.request.farmer_id);
     state.sources.ledger = ledger.via;
-    if (ledger.via === "sample" && ledger.synthetic && !state.synthetic_inputs.includes("ledger")) {
-      state.synthetic_inputs.push("ledger");
-    }
+    if (ledger.synthetic && !state.synthetic_inputs.includes("ledger")) state.synthetic_inputs.push("ledger");
     const entry = [...ledger.value].reverse().find((item) => item.record_type === "prior_verdict" && item.verdict);
     if (entry && entry.verdict) {
       state.prior = {

@@ -5,7 +5,7 @@ import { createTracer, runContext, asAgent, traceEvent, currentModelIdentity } f
 import { analyzeMarket } from "../agents/marketAnalyst.js";
 import { analyzeStorage } from "../agents/storageWeatherAnalyst.js";
 import { reviewClaims } from "../agents/riskCritic.js";
-import { resolveDataSource } from "../adapters/zetaris.js";
+import { resolveDataSource, traceCountyCase } from "../adapters/zetaris.js";
 import { assemble, buildNoRecommendation, recallAndGate, rememberOutcome } from "../agents/planner.js";
 import { annotateRecheck, loadPrior } from "../agents/watcher.js";
 import { createInitialState } from "./state.js";
@@ -133,6 +133,7 @@ export async function runCase(request: RunRequest, traceId = randomUUID()): Prom
       retry_count: 0,
       status: "success",
     });
+    await asAgent("Planner", () => traceCountyCase(state.request.county));
     await asAgent("Planner", () => recallAndGate(state));
     if (state.coverage.blocking) {
       const blocked = await asAgent("Planner", () => buildNoRecommendation(state));

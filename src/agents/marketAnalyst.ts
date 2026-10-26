@@ -16,7 +16,7 @@ function disagrees(trend: PriceTrend, direction: string): boolean {
 
 function rememberSource(state: CaseState, key: "prices" | "news", via: "zetaris" | "sample", synthetic: boolean, label: string): void {
   state.sources[key] = via;
-  if (via === "sample" && synthetic && !state.synthetic_inputs.includes(label)) state.synthetic_inputs.push(label);
+  if (synthetic && !state.synthetic_inputs.includes(label)) state.synthetic_inputs.push(label);
 }
 
 export async function analyzeMarket(state: CaseState): Promise<void> {
@@ -110,7 +110,7 @@ export async function analyzeMarket(state: CaseState): Promise<void> {
     evidence.push(describeEvidence(DIRTY_FIXTURE_SOURCE, DIRTY_FIXTURE_SOURCE, stats.latestDate, state.today, staleDays));
   }
   if (planted.length === 0) {
-    evidence.push(describeEvidence("kamis", prices.evidenceSource, stats.latestDate, state.today, staleDays));
+    evidence.push(describeEvidence("kamis", prices.evidenceSource, stats.latestDate, state.today, staleDays, prices.synthetic));
   }
   if (whiteNews.length > 0) {
     evidence.push(describeEvidence(
@@ -119,6 +119,7 @@ export async function analyzeMarket(state: CaseState): Promise<void> {
       newestWhite ?? "",
       state.today,
       staleDays,
+      newsHit.synthetic,
     ));
   }
 
@@ -160,10 +161,9 @@ export async function analyzeMarket(state: CaseState): Promise<void> {
 }
 
 function newsOrigin(hit: { synthetic: boolean; evidenceSource: string }, items: NewsItem[]): string {
-  // Sample ids are n1, n2, and so on. The Zetaris news view does not project the file's synthetic flag,
-  // so those ids stay labelled synthetic-news. A row with any other id can be market-news.
-  if (hit.synthetic || hit.evidenceSource.includes("news.json")) return "synthetic-news";
-  if (items.length > 0 && items.every((item) => /^n\d+$/u.test(item.id))) return "synthetic-news";
+  // The maize.market_news view is flagged synthetic. Sample ids n1, n2, ... stay synthetic too.
+  if (hit.synthetic || hit.evidenceSource.includes("news.json")) return "synthetic";
+  if (items.length > 0 && items.every((item) => /^n\d+$/u.test(item.id))) return "synthetic";
   return "market-news";
 }
 

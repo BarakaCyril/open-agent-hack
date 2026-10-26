@@ -315,6 +315,15 @@ export function hasTrace(traceId: string, logDir: string): boolean {
   return findTraceFile(traceId, logDir) !== null;
 }
 
+/** Events for one run, from the in-memory trace or the jsonl file on disk. */
+export function readTrace(traceId: string, logDir: string): TraceEvent[] | null {
+  const live = traces.get(traceId);
+  if (live) return live.events.slice();
+  const file = findTraceFile(traceId, logDir);
+  if (!file) return null;
+  return readTraceEvents(file);
+}
+
 export function followTrace(traceId: string, logDir: string, sink: {
   onEvent: (event: TraceEvent) => void;
   onEnd: () => void;

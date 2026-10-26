@@ -35,7 +35,7 @@ describe("zetaris maize reads", () => {
     }
     expect(MAIZE_TABLES.prices.columns).toContain("wholesale_price_kes");
     expect(MAIZE_TABLES.weather.columns).toContain("forecast_date");
-    expect(MAIZE_TABLES.rules.columns).not.toContain("synthetic");
+    expect(MAIZE_TABLES.rules.columns).toContain("synthetic");
     expect(MAIZE_TABLES.news.columns).toContain("maize_type");
     expect(MAIZE_TABLES.ledger.columns).toContain("forecast_rain_mm_7d");
   });
@@ -117,6 +117,11 @@ describe("Zetaris token refresh", () => {
     ZETARIS_MAIZE_DIR: "/tmp/maize",
     REFRESH_ENABLED: true,
     REFRESH_TTL_MINUTES: 360,
+    MAIZE_PG_HOST: "127.0.0.1",
+    MAIZE_PG_PORT: 5433,
+    MAIZE_PG_USER: "maize",
+    MAIZE_PG_PASSWORD: "",
+    MAIZE_PG_DATABASE: "maize",
     ...overrides,
   });
 

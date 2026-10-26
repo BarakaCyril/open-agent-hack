@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { loadConfig, redact, type AppConfig } from "../config.js";
 import type { DataSource } from "../schemas.js";
 import { currentContext, traceEvent } from "../tracing.js";
+import { loadCountyCatalog } from "../tools/counties.js";
 import {
   finiteNumber,
   loadLedger,
@@ -105,12 +106,36 @@ export function resetBreaker(): void {
 export class RemoteSourceError extends Error {
   readonly timeout: boolean;
   readonly retryable: boolean;
+  /** No HTTP response: network failure, timeout, or an open circuit breaker. */
+  readonly unreachable: boolean;
 
-  constructor(message: string, options: { timeout?: boolean; retryable?: boolean } = {}) {
+  constructor(message: string, options: { timeout?: boolean; retryable?: boolean; unreachable?: boolean } = {}) {
     super(message);
     this.name = "RemoteSourceError";
     this.timeout = options.timeout ?? false;
     this.retryable = options.retryable ?? false;
+    this.unreachable = options.unreachable ?? false;
+  }
+}
+
+/** Zetaris answered, and the table or statement failed. Never a reason to read sample files. */
+export class ZetarisQueryError extends RemoteSourceError {
+  readonly code = "zetaris_query_failed" as const;
+
+  constructor(message: string) {
+    super(message, { retryable: false, unreachable: false });
+    this.name = "ZetarisQueryError";
+  }
+}
+
+/** Zetaris did not answer. SAMPLE_MODE=false surfaces this as HTTP 503. */
+export class ZetarisUnavailableError extends RemoteSourceError {
+  readonly code = "zetaris_unavailable" as const;
+  readonly statusCode = 503 as const;
+
+  constructor(message: string) {
+    super(message, { retryable: false, unreachable: true });
+    this.name = "ZetarisUnavailableError";
   }
 }
 
@@ -135,17 +160,17 @@ export const MAIZE_TABLES = {
   news: {
     table: "market_news",
     file: "news.json",
-    columns: "id, as_of, county, maize_type, status, direction, headline, commodity",
+    columns: "id, as_of, county, maize_type, status, direction, headline, commodity, synthetic",
   },
   rules: {
     table: "storage_loss_rules",
     file: "storage_loss_rules.csv",
-    columns: "storage, rain_mm_min, humidity_min, daily_loss_pct",
+    columns: "storage, rain_mm_min, humidity_min, daily_loss_pct, synthetic",
   },
   ledger: {
     table: "farmer_ledger",
     file: "farmer_ledger.json",
-    columns: "farmer_id, county, as_of, record_type, verdict, hold_days, bags, storage, forecast_rain_mm_7d, notes",
+    columns: "farmer_id, county, as_of, record_type, verdict, hold_days, bags, storage, forecast_rain_mm_7d, notes, synthetic",
   },
 } as const;
 
@@ -257,8 +282,8 @@ function sqlSummary(sql: string): string {
 function traceSql(status: "success" | "retrying" | "error" | "fallback", sql: string, detail: string, rows: number, retry: number): void {
   traceEvent({
     action: "zetaris_sql",
-    input_summary: sqlSummary(sql),
-    output_summary: `rows=${rows} ${detail}`,
+    input_summary: redact(sqlSummary(sql)),
+    output_summary: `rows=${rows} ${redact(detail)}`,
     target_agent: null,
     confidence: null,
     retry_count: retry,
@@ -309,7 +334,7 @@ async function executeOnce(config: AppConfig, sql: string, limit: number, isRetr
     const isRefused = cause && typeof cause === "object" && (cause as Record<string, unknown>).code === "ECONNREFUSED";
     throw new RemoteSourceError(
       timedOut ? `Zetaris timed out after ${config.SOURCE_TIMEOUT_SECONDS}s` : networkFailure(error),
-      { timeout: timedOut, retryable: !timedOut && !isRefused },
+      { timeout: timedOut, retryable: !timedOut && !isRefused, unreachable: true },
     );
   }
   const text = await response.text();
@@ -322,6 +347,7 @@ async function executeOnce(config: AppConfig, sql: string, limit: number, isRetr
     }
     throw new RemoteSourceError(`Zetaris HTTP ${response.status}: ${redact(text).slice(0, 180)}`, {
       retryable: response.status >= 500 || response.status === 429,
+      unreachable: false,
     });
   }
   try {
@@ -334,7 +360,7 @@ async function executeOnce(config: AppConfig, sql: string, limit: number, isRetr
 
 async function loadRows(statement: string, bounded: number): Promise<Record<string, unknown>[]> {
   if (isBreakerOpen()) {
-    throw new RemoteSourceError("Zetaris is currently offline (circuit breaker open)", { retryable: false });
+    throw new RemoteSourceError("Zetaris is currently offline (circuit breaker open)", { retryable: false, unreachable: true });
   }
   const config = loadConfig();
   const attempts = config.MAX_RETRIES + 1;
@@ -350,6 +376,7 @@ async function loadRows(statement: string, bounded: number): Promise<Record<stri
         : new RemoteSourceError(redact(error instanceof Error ? error.message : "zetaris failed"));
       last = remote;
       traceSql(remote.timeout ? "retrying" : "error", statement, remote.message, 0, attempt - 1);
+      if (!remote.unreachable) throw remote;
       if (remote.timeout || !remote.retryable || attempt >= attempts) {
         breakerTrippedUntil = Date.now() + 20_000;
         throw remote;
@@ -364,13 +391,52 @@ export function clearReadCache(): void {
   currentContext()?.queryCache.clear();
 }
 
+type SqlRunner = (sql: string, limit?: number) => Promise<Record<string, unknown>[]>;
+let runnerOverride: SqlRunner | null = null;
+
+/** Tests inject a client. Production reads go through the REST runner. */
+export function setSqlRunnerForTests(runner: SqlRunner | null): void {
+  runnerOverride = runner;
+  resetBreaker();
+}
+
 export async function runSql(sql: string, limit = 500): Promise<Record<string, unknown>[]> {
   const statement = assertSingleStatement(sql);
   const bounded = Math.max(1, Math.min(5000, limit));
+  if (runnerOverride) {
+    try {
+      const rows = await runnerOverride(statement, bounded);
+      traceSql("success", statement, "ok", rows.length, 0);
+      return rows;
+    } catch (error) {
+      if (error instanceof RemoteSourceError) {
+        traceSql("error", statement, error.message, 0, 0);
+        throw error;
+      }
+      const queryError = new ZetarisQueryError(redact(error instanceof Error ? error.message : "zetaris query failed"));
+      traceSql("error", statement, queryError.message, 0, 0);
+      throw queryError;
+    }
+  }
   const key = `${bounded}\n${statement}`;
   const { value, hit } = await cachedRows(currentContext()?.queryCache, key, () => loadRows(statement, bounded));
   if (hit) traceSql("success", statement, "cache", value.length, 0);
   return value;
+}
+
+/** One statement, including DDL used by scripts/setup_zetaris.ts. The password is redacted in errors. */
+export async function executeStatement(sql: string): Promise<void> {
+  const trimmed = sql.trim().replace(/;+\s*$/u, "");
+  if (!trimmed) throw new Error("SQL statement is empty");
+  if (trimmed.includes(";")) throw new Error("Zetaris accepts one SQL statement per call");
+  try {
+    await loadRows(trimmed, 50);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    const isSelect = /^(select|with)\b/iu.test(trimmed);
+    if (!isSelect && error instanceof RemoteSourceError && /no data array|was not JSON/iu.test(message)) return;
+    throw error;
+  }
 }
 
 export interface ZetarisTableCheck {
@@ -385,7 +451,9 @@ export async function checkZetarisTables(query: typeof runSql = runSql): Promise
   const results: ZetarisTableCheck[] = [];
   for (const { table } of Object.values(MAIZE_TABLES)) {
     try {
-      const rows = await query(`SELECT COUNT(*) AS row_count FROM ${maizeFrom(table)}`, 1);
+      // weather_daily is one Open-Meteo call per county. Count one county so a health check does not call the other six.
+      const filter = table === "weather_daily" ? " WHERE county = 'Kirinyaga'" : "";
+      const rows = await query(`SELECT COUNT(*) AS row_count FROM ${maizeFrom(table)}${filter}`, 1);
       const count = Number(rows[0]?.row_count);
       if (!Number.isFinite(count) || count < 0) {
         results.push({ table, status: "error", detail: "Count query returned no numeric row count." });
@@ -399,12 +467,13 @@ export async function checkZetarisTables(query: typeof runSql = runSql): Promise
   return results;
 }
 
-function markFallback(table: string, file: string, detail: string): void {
-  currentContext()?.markSampleFallback(`maize.${table} -> sample:${file}: ${detail}`);
+function markOffline(table: string, file: string, detail: string): void {
+  const note = `offline mode: Zetaris unreachable, maize.${table} -> sample:${file}: ${detail}`;
+  currentContext()?.markSampleFallback(note);
   traceEvent({
     action: "zetaris_sql",
-    input_summary: detail,
-    output_summary: `fallback sample:${file} after maize.${table} failed`,
+    input_summary: redact(detail),
+    output_summary: `offline mode sample:${file} after maize.${table} was unreachable`,
     target_agent: null,
     confidence: null,
     retry_count: 0,
@@ -412,51 +481,41 @@ function markFallback(table: string, file: string, detail: string): void {
   });
 }
 
-async function withSampleFallback<T>(options: {
+async function readLive<T>(options: {
   table: string;
   file: string;
-  fullSql: string;
-  narrowSql: string;
+  sql: string;
   map: (rows: Record<string, unknown>[]) => T;
   sample: () => T;
-  synthetic: boolean;
+  /** Sample-file rows are synthetic. Live rows use liveSynthetic. */
+  sampleSynthetic: boolean;
+  liveSynthetic: boolean;
 }): Promise<SourceHit<T>> {
   const live = {
     via: "zetaris" as const,
-    synthetic: false,
+    synthetic: options.liveSynthetic,
     evidenceSource: evidenceLabel("zetaris", options.table, options.file),
   };
-  const finish = (error: unknown): SourceHit<T> => {
-    const config = loadConfig();
-    if (!config.SAMPLE_MODE) {
-      if (error instanceof Error) throw new RemoteSourceError(error.message, {
-        timeout: error instanceof RemoteSourceError ? error.timeout : false,
-        retryable: false,
-      });
-      throw new RemoteSourceError("zetaris failed");
+  try {
+    const rows = await runSql(options.sql, 500);
+    return { value: options.map(rows), ...live };
+  } catch (error) {
+    const remote = error instanceof RemoteSourceError
+      ? error
+      : new ZetarisQueryError(error instanceof Error ? error.message : "zetaris query failed");
+    if (!remote.unreachable) {
+      throw new ZetarisQueryError(remote.message);
     }
-    markFallback(options.table, options.file, error instanceof Error ? error.message : "query failed");
+    if (!loadConfig().SAMPLE_MODE) {
+      throw new ZetarisUnavailableError(remote.message);
+    }
+    markOffline(options.table, options.file, remote.message);
     return {
       value: options.sample(),
       via: "sample",
-      synthetic: options.synthetic,
+      synthetic: options.sampleSynthetic,
       evidenceSource: evidenceLabel("sample", options.table, options.file),
     };
-  };
-  try {
-    const rows = await runSql(options.fullSql, 500);
-    return { value: options.map(rows), ...live };
-  } catch (error) {
-    if (error instanceof RemoteSourceError && error.timeout) {
-      try {
-        const rows = await runSql(options.narrowSql, 50);
-        return { value: options.map(rows), ...live };
-      } catch (narrowError) {
-        return finish(narrowError);
-      }
-    }
-    if (error instanceof RemoteSourceError) return finish(error);
-    throw error;
   }
 }
 
@@ -468,14 +527,14 @@ export async function readPrices(county: string): Promise<SourceHit<KamisRow[]>>
   const where = countyClause(county);
   const { table, file, columns } = MAIZE_TABLES.prices;
   const from = maizeFrom(table);
-  return withSampleFallback({
+  return readLive({
     table,
     file,
-    fullSql: `SELECT ${columns} FROM ${from} WHERE ${where}`,
-    narrowSql: `SELECT ${columns} FROM ${from} WHERE ${where} AND market_date >= DATE '2026-10-01'`,
+    sql: `SELECT ${columns} FROM ${from} WHERE ${where}`,
     map: (rows) => rows.map((row) => mapKamisRow(row)).filter((row): row is KamisRow => row !== null && row.county.toLowerCase() === county.toLowerCase()),
     sample: () => loadPriceRows().filter((row) => row.county.toLowerCase() === county.toLowerCase()),
-    synthetic: false,
+    sampleSynthetic: false,
+    liveSynthetic: false,
   });
 }
 
@@ -483,15 +542,18 @@ export async function readWeather(county: string): Promise<SourceHit<WeatherSeri
   const where = countyClause(county);
   const { table, file, columns } = MAIZE_TABLES.weather;
   const from = maizeFrom(table);
-  return withSampleFallback({
+  const hit = await readLive({
     table,
     file,
-    fullSql: `SELECT ${columns} FROM ${from} WHERE ${where}`,
-    narrowSql: `SELECT county, as_of, source, forecast_date, rain_mm, humidity_pct FROM ${from} WHERE ${where} AND forecast_date >= DATE '2026-10-01'`,
+    sql: `SELECT ${columns} FROM ${from} WHERE ${where}`,
     map: (rows) => seriesFromSql(county, rows),
     sample: () => loadWeather().find((series) => series.county.toLowerCase() === county.toLowerCase()) ?? null,
-    synthetic: true,
+    sampleSynthetic: true,
+    liveSynthetic: false,
   });
+  if (hit.value?.synthetic) hit.synthetic = true;
+  if (hit.value?.source === "open-meteo") hit.synthetic = false;
+  return hit;
 }
 
 function seriesFromSql(county: string, rows: Record<string, unknown>[]): WeatherSeries | null {
@@ -520,11 +582,10 @@ function seriesFromSql(county: string, rows: Record<string, unknown>[]): Weather
 export async function readRules(): Promise<SourceHit<StorageRule[]>> {
   const { table, file, columns } = MAIZE_TABLES.rules;
   const from = maizeFrom(table);
-  return withSampleFallback({
+  return readLive({
     table,
     file,
-    fullSql: `SELECT ${columns} FROM ${from}`,
-    narrowSql: `SELECT ${columns} FROM ${from} WHERE storage IN ('open_bags', 'dry_store')`,
+    sql: `SELECT ${columns} FROM ${from}`,
     map: (rows) => rows.flatMap((raw) => {
       const row: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(raw)) row[key.toLowerCase()] = value;
@@ -541,7 +602,8 @@ export async function readRules(): Promise<SourceHit<StorageRule[]>> {
       }];
     }),
     sample: () => loadRules(),
-    synthetic: true,
+    sampleSynthetic: true,
+    liveSynthetic: true,
   });
 }
 
@@ -549,17 +611,17 @@ export async function readNews(county: string): Promise<SourceHit<NewsItem[]>> {
   const where = `(county = ${sqlString(county, "county")} OR county = 'national')`;
   const { table, file, columns } = MAIZE_TABLES.news;
   const from = maizeFrom(table);
-  return withSampleFallback({
+  return readLive({
     table,
     file,
-    fullSql: `SELECT ${columns} FROM ${from} WHERE ${where}`,
-    narrowSql: `SELECT id, as_of, county, maize_type, status, direction, headline FROM ${from} WHERE ${where} AND as_of >= DATE '2026-10-01'`,
+    sql: `SELECT ${columns} FROM ${from} WHERE ${where}`,
     map: (rows) => rows.flatMap((raw) => {
       const item = mapNews(raw);
       return item ? [item] : [];
     }),
     sample: () => loadNews().filter((item) => item.county.toLowerCase() === county.toLowerCase() || item.county === "national"),
-    synthetic: true,
+    sampleSynthetic: true,
+    liveSynthetic: true,
   });
 }
 
@@ -586,17 +648,130 @@ export async function readFarmerLedger(farmerId: string): Promise<SourceHit<Ledg
   const id = sqlString(farmerId, "farmer_id");
   const { table, file, columns } = MAIZE_TABLES.ledger;
   const from = maizeFrom(table);
-  return withSampleFallback({
+  return readLive({
     table,
     file,
-    fullSql: `SELECT ${columns} FROM ${from} WHERE farmer_id = ${id}`,
-    narrowSql: `SELECT farmer_id, as_of, record_type, verdict, forecast_rain_mm_7d FROM ${from} WHERE farmer_id = ${id} AND as_of >= DATE '2026-09-01'`,
+    sql: `SELECT ${columns} FROM ${from} WHERE farmer_id = ${id}`,
     map: (rows) => rows.flatMap((raw) => {
       const entry = mapLedger(raw);
       return entry ? [entry] : [];
     }),
     sample: () => loadLedger().filter((entry) => entry.farmer_id === farmerId),
-    synthetic: true,
+    sampleSynthetic: true,
+    liveSynthetic: true,
+  });
+}
+
+export interface CountyCoverage {
+  county: string;
+  coverage: "supported" | "limited";
+  dry_maize_quotes_14d: number;
+}
+
+function coverageRank(count: number): CountyCoverage["coverage"] {
+  return count >= 3 ? "supported" : "limited";
+}
+
+function lowerRow(raw: Record<string, unknown>): Record<string, unknown> {
+  const row: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(raw)) row[key.toLowerCase()] = value;
+  return row;
+}
+
+function offlineCounties(today = new Date().toISOString().slice(0, 10)): CountyCoverage[] {
+  const counts = new Map<string, number>();
+  for (const row of loadPriceRows()) {
+    if (row.commodity.toLowerCase() !== "dry maize") continue;
+    const age = (Date.parse(today) - Date.parse(row.market_date)) / 86_400_000;
+    if (!Number.isFinite(age) || age < 0 || age > 14) continue;
+    const key = row.county.toLowerCase();
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return loadCountyCatalog().map((entry) => {
+    const n = counts.get(entry.county.toLowerCase()) ?? 0;
+    return { county: entry.county, coverage: coverageRank(n), dry_maize_quotes_14d: n };
+  });
+}
+
+/** Counties from maize.counties, with dry-maize coverage over the last 14 days. */
+export async function listCounties(): Promise<{ source: "zetaris" | "sample"; counties: CountyCoverage[] }> {
+  try {
+    const names = await runSql("SELECT county FROM maize.counties", 100);
+    const counts = await runSql(
+      "SELECT county, COUNT(*) AS n FROM maize.kamis_prices WHERE lower(commodity) = 'dry maize' AND market_date >= date_sub(current_date(), 14) GROUP BY county",
+      100,
+    );
+    const byCounty = new Map<string, number>();
+    for (const raw of counts) {
+      const row = lowerRow(raw);
+      const name = String(row.county ?? "");
+      const n = Number(row.n);
+      if (name) byCounty.set(name.toLowerCase(), Number.isFinite(n) ? n : 0);
+    }
+    const counties = names.flatMap((raw) => {
+      const name = String(lowerRow(raw).county ?? "").trim();
+      if (!name) return [];
+      const n = byCounty.get(name.toLowerCase()) ?? 0;
+      return [{ county: name, coverage: coverageRank(n), dry_maize_quotes_14d: n }];
+    });
+    return { source: "zetaris", counties };
+  } catch (error) {
+    const remote = error instanceof RemoteSourceError
+      ? error
+      : new ZetarisQueryError(error instanceof Error ? error.message : "county query failed");
+    if (!remote.unreachable) throw new ZetarisQueryError(remote.message);
+    if (!loadConfig().SAMPLE_MODE) throw new ZetarisUnavailableError(remote.message);
+    markOffline("counties", "counties.csv", remote.message);
+    return { source: "sample", counties: offlineCounties() };
+  }
+}
+
+export async function traceCountyCase(county: string): Promise<void> {
+  const sql = `SELECT county, latest_market_date, quote_count, forecast_date, precipitation_sum, temperature_2m_mean, humidity_pct, storage, daily_loss_pct, rules_synthetic FROM maize.county_case WHERE ${countyClause(county)}`;
+  try {
+    const rows = await runSql(sql, 80);
+    traceEvent({
+      action: "county_case",
+      input_summary: redact(sqlSummary(sql)),
+      output_summary: `rows=${rows.length}`,
+      target_agent: null,
+      confidence: null,
+      retry_count: 0,
+      status: "success",
+    });
+  } catch (error) {
+    const remote = error instanceof RemoteSourceError
+      ? error
+      : new ZetarisQueryError(error instanceof Error ? error.message : "county_case failed");
+    traceEvent({
+      action: "county_case",
+      input_summary: redact(sqlSummary(sql)),
+      output_summary: redact(remote.message),
+      target_agent: null,
+      confidence: null,
+      retry_count: 0,
+      status: remote.unreachable && loadConfig().SAMPLE_MODE ? "fallback" : "error",
+    });
+    if (remote.unreachable && loadConfig().SAMPLE_MODE) return;
+    throw remote.unreachable ? new ZetarisUnavailableError(remote.message) : new ZetarisQueryError(remote.message);
+  }
+}
+
+function sqlDate(value: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(value)) throw new Error("date was rejected as a SQL filter");
+  return `DATE '${value}'`;
+}
+
+/** White-maize quotes in the claim's own date window, for the critic's recomputation. */
+export async function readWhiteMaizeWindow(county: string, oldest: string, latest: string): Promise<Array<{ date: string; price: number }>> {
+  const sql = `SELECT market_date, wholesale_price_kes FROM maize.kamis_prices WHERE ${countyClause(county)} AND lower(commodity) = 'dry maize' AND lower(variety) LIKE '%white%' AND unit_kg = 90 AND market_date >= ${sqlDate(oldest)} AND market_date <= ${sqlDate(latest)}`;
+  const rows = await runSql(sql, 500);
+  return rows.flatMap((raw) => {
+    const row = lowerRow(raw);
+    const date = String(row.market_date ?? "").slice(0, 10);
+    const price = finiteNumber(row.wholesale_price_kes);
+    if (!date || price === undefined) return [];
+    return [{ date, price }];
   });
 }
 

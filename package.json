@@ -15,16 +15,19 @@
     "ui": "npm --prefix ui run dev",
     "ui:build": "npm --prefix ui run build",
     "trace": "tsx scripts/trace.ts",
-    "refresh:weather": "tsx scripts/refresh_weather.ts",
     "refresh:kamis": "tsx scripts/refresh_kamis.ts",
+    "setup:zetaris": "tsx scripts/setup_zetaris.ts",
+    "seed:zetaris": "tsx scripts/seed_zetaris.ts",
     "load:sample": "tsx scripts/load_sample_into_zetaris.ts"
   },
   "dependencies": {
     "fastify": "^5.6.1",
+    "pg": "^8.23.1",
     "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^22.19.0",
+    "@types/pg": "^8.23.1",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",
     "vitest": "^5.0.5"

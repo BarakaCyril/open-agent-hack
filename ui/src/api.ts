@@ -65,7 +65,7 @@ export interface RunCaseResponse {
     edge_over_next_best: number;
   } | null;
   confidence: number;
-  evidence: Array<{ source: string; as_of: string; freshness: string }>;
+  evidence: Array<{ source: string; as_of: string; freshness: string; synthetic?: boolean }>;
   reasoning_trace_summary: string;
   what_would_change_this_advice: string[];
   limitations: string[];
@@ -182,6 +182,22 @@ export const api = {
 
   runResult: async (traceId: string): Promise<RunCaseResponse> => {
     return request<RunCaseResponse>(`/run/${traceId}/result`);
+  },
+
+  runCase: async (payload: RunCaseRequest): Promise<RunCaseResponse> => {
+    return request<RunCaseResponse>('/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  },
+
+  counties: async (): Promise<{ source: 'zetaris' | 'sample'; counties: Array<{ county: string; coverage: 'supported' | 'limited'; dry_maize_quotes_14d: number }> }> => {
+    return request('/counties');
+  },
+
+  trace: async (traceId: string): Promise<{ trace_id: string; events: TraceEvent[] }> => {
+    return request<{ trace_id: string; events: TraceEvent[] }>(`/trace/${traceId}`);
   },
 
   subscribeTraceEvents: (

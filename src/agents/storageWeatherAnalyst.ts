@@ -12,12 +12,8 @@ export async function analyzeStorage(state: CaseState): Promise<void> {
   const rulesHit = await readRules();
   state.sources.weather = weatherHit.via;
   state.sources.rules = rulesHit.via;
-  if (weatherHit.via === "sample" && weatherHit.synthetic && !state.synthetic_inputs.includes("weather")) {
-    state.synthetic_inputs.push("weather");
-  }
-  if (rulesHit.via === "sample" && rulesHit.synthetic && !state.synthetic_inputs.includes("rules")) {
-    state.synthetic_inputs.push("rules");
-  }
+  if (weatherHit.synthetic && !state.synthetic_inputs.includes("weather")) state.synthetic_inputs.push("weather");
+  if (rulesHit.synthetic && !state.synthetic_inputs.includes("rules")) state.synthetic_inputs.push("rules");
 
   const series = weatherHit.value;
   const forecast = series?.days ?? [];
@@ -29,7 +25,8 @@ export async function analyzeStorage(state: CaseState): Promise<void> {
     failure = error instanceof Error ? error.message : "loss model failed";
   }
 
-  const asOf = series?.as_of ?? "";
+  const liveForecast = series?.source === "open-meteo";
+  const asOf = liveForecast ? state.today : (series?.as_of ?? "");
   const staleDays = loadConfig().STALE_DAYS;
   const statement = loss
     ? `${storage} in ${county}: expected loss over ${loss.days} forecast days is ${pct(loss.mean)} (band ${pct(loss.p10)} to ${pct(loss.p90)}). Rain total ${loss.totalRainMm.toFixed(0)} mm. Rules matched on ${loss.rulesMatched} days.`
@@ -49,15 +46,15 @@ export async function analyzeStorage(state: CaseState): Promise<void> {
     statement: note.fallback || !note.text ? statement : `${statement} Note: ${note.text.slice(0, 400)}`,
     evidence: loss
       ? [
-          describeEvidence(series?.source || "weather", weatherHit.evidenceSource, asOf, state.today, staleDays),
           describeEvidence(
-            // The only rules file is synthetic, and maize.storage_loss_rules drops that column.
-            "synthetic-storage-rules",
-            rulesHit.evidenceSource,
-            "",
+            series?.source === "open-meteo" ? "open-meteo" : "synthetic",
+            weatherHit.evidenceSource,
+            asOf,
             state.today,
             staleDays,
+            weatherHit.synthetic || series?.source !== "open-meteo",
           ),
+          describeEvidence("synthetic", rulesHit.evidenceSource, "", state.today, staleDays, true),
         ]
       : [],
     confidence: loss ? roundTo(loss.rulesMatched === forecast.length && forecast.length > 0 ? 0.8 : 0.35) : 0,

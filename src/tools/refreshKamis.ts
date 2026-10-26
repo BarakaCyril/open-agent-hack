@@ -1,30 +1,31 @@
 import fs from "node:fs";
 import path from "node:path";
+import type { PgClient } from "../adapters/maizePg.js";
+import { upsertKamisRows } from "../adapters/maizePg.js";
 import { clearReadCache } from "../adapters/zetaris.js";
 import type { KamisRow } from "../adapters/sampleData.js";
 import { traceEvent } from "../tracing.js";
 import { parseKamisWorkbook } from "./kamisSheet.js";
-import { hostDirectoryProblem, upsertPriceFile } from "./maizeFiles.js";
 import {
   KAMIS_EXPORT_ORIGIN,
   LIVE_USER_AGENT,
   REQUEST_GAP_MS,
-  maizeDirectory,
   positiveInt,
+  type FetchLike,
   type RefreshReport,
 } from "./refreshReport.js";
 import { recordRefreshSuccess, refreshBlockReason, traceRefreshSkipped, traceRefreshUnavailable, type RefreshGateOptions } from "./refreshState.js";
-import type { FetchLike } from "./refreshWeather.js";
 
 export interface KamisRefreshOptions extends RefreshGateOptions {
   fetch?: FetchLike;
   pauseMs?: number;
   maxPages?: number;
   perPage?: number;
-  maizeDir?: string;
   cacheDir?: string;
   retryCount?: number;
   sleep?: (ms: number) => Promise<void>;
+  /** Injected by tests. Production uses MAIZE_PG_* from the environment. */
+  pg?: PgClient;
 }
 
 const ALLOWED_PAGE_SIZES = [10, 50, 100, 500, 1500, 3000];
@@ -91,9 +92,6 @@ export async function refreshKamis(options: KamisRefreshOptions = {}): Promise<R
   const retryCount = options.retryCount ?? 0;
   const blocked = refreshBlockReason("kamis", options);
   if (blocked) return skipped(blocked, retryCount);
-  const directory = maizeDirectory(options.maizeDir);
-  const host = hostDirectoryProblem(directory);
-  if (host) return unavailable(host, retryCount);
   const pauseMs = options.pauseMs ?? REQUEST_GAP_MS;
   const perPage = ALLOWED_PAGE_SIZES.includes(options.perPage ?? 0)
     ? options.perPage ?? 100
@@ -178,7 +176,7 @@ export async function refreshKamis(options: KamisRefreshOptions = {}): Promise<R
     return report;
   }
   try {
-    const stored = upsertPriceFile(rows, directory);
+    const stored = await upsertKamisRows(rows, options.pg);
     clearReadCache();
     const report: RefreshReport = {
       status: failedPages > 0 ? "fallback" : "success",
@@ -194,7 +192,7 @@ export async function refreshKamis(options: KamisRefreshOptions = {}): Promise<R
     return report;
   } catch (error) {
     const detail = error instanceof Error ? error.message : "Prices were not written.";
-    const hostDown = /not available|not writable|Refusing to write/u.test(detail);
+    const hostDown = /ECONNREFUSED|ENOTFOUND|authentication failed|connect E|password/u.test(detail);
     const report: RefreshReport = {
       status: "fallback",
       fetched: rows.length,

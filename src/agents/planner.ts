@@ -328,12 +328,12 @@ function limitationsFor(state: CaseState): string[] {
     "Farmer history is stored in H-MEM (profile, verdicts, and offer gaps) under data/hmem.",
   ];
   if (state.sources.prices === "sample") {
-    lines.push("Price rows were read from data/sample/kamis_dry_maize.csv after the Zetaris call failed.");
+    lines.push("Offline mode: price rows were read from data/sample/kamis_dry_maize.csv because Zetaris was unreachable.");
   }
-  if (state.synthetic_inputs.includes("weather")) lines.push("The forecast used here is synthetic (data/sample/weather.json).");
-  if (state.synthetic_inputs.includes("rules")) lines.push("Storage-loss rules are synthetic (data/sample/storage_loss_rules.csv).");
-  if (state.synthetic_inputs.includes("news")) lines.push("News items are synthetic (data/sample/news.json).");
-  if (state.synthetic_inputs.includes("ledger")) lines.push("The farmer ledger used here is synthetic (data/sample/farmer_ledger.json).");
+  if (state.synthetic_inputs.includes("weather")) lines.push("The forecast used here is synthetic.");
+  if (state.synthetic_inputs.includes("rules")) lines.push("Storage-loss rules are synthetic.");
+  if (state.synthetic_inputs.includes("news")) lines.push("News items are synthetic.");
+  if (state.synthetic_inputs.includes("ledger")) lines.push("The farmer ledger used here is synthetic.");
   if (state.narrative_fallback) lines.push(wordingFallbackNote());
   lines.push(...extraLimits(state));
   lines.push("KAMIS licence terms for the price sample are unconfirmed.");

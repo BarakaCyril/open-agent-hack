@@ -4,8 +4,17 @@ export interface RefreshReport {
   stored: number;
   rejected: number;
   detail: string;
-  /** The Zetaris host directory was missing, not writable, or protected. */
+  /** The price store could not be written. */
   unavailable?: boolean;
+}
+
+export interface FetchLike {
+  (url: string, init?: { headers?: Record<string, string> }): Promise<{
+    ok: boolean;
+    status: number;
+    text: () => Promise<string>;
+    arrayBuffer: () => Promise<ArrayBuffer>;
+  }>;
 }
 
 export const LIVE_USER_AGENT = "open-agent-maize/0.1 (maize decision support)";

@@ -1,7 +1,9 @@
 import { chat } from "../adapters/meterless.js";
+import { RemoteSourceError, readWhiteMaizeWindow } from "../adapters/zetaris.js";
 import { loadConfig } from "../config.js";
 import type { CaseState, Claim, CriticDecision, CriticReason } from "../schemas.js";
 import { MIXED_PRICE_WINDOW_DAYS, daysBetween, latestClaim, mixedAgeNote } from "../orchestration/state.js";
+import { cleanAndSummarize } from "../tools/prices.js";
 import { traceEvent } from "../tracing.js";
 
 const ESCALATE = new Set<CriticReason>(["coverage", "farmer_limits", "missing_input"]);
@@ -153,8 +155,72 @@ export function judgeClaims(input: JudgeInput): CriticDecision {
   };
 }
 
+function closeEnough(left: number, right: number): boolean {
+  return Math.abs(left - right) <= 1;
+}
+
+/** Recompute the price claim from Zetaris. A mismatch rejects it. Offline mode records a skipped check. */
+export async function verifyMarketClaim(state: CaseState, decision: CriticDecision): Promise<CriticDecision> {
+  if (decision.action !== "approve") return decision;
+  const claim = latestClaim(state, "MarketAnalyst");
+  const payload = claim?.payload ?? {};
+  const n = typeof payload.n === "number" ? payload.n : null;
+  const p10 = typeof payload.p10 === "number" ? payload.p10 : null;
+  const p50 = typeof payload.p50 === "number" ? payload.p50 : null;
+  const p90 = typeof payload.p90 === "number" ? payload.p90 : null;
+  const latest = typeof payload.latest_date === "string" ? payload.latest_date : "";
+  const oldest = typeof payload.oldest_date === "string" ? payload.oldest_date : "";
+  if (n === null || p10 === null || p50 === null || p90 === null || !latest || !oldest) return decision;
+  const summarySql = `SELECT market_date, wholesale_price_kes FROM maize.kamis_prices WHERE county = '${state.request.county}' AND white maize window ${oldest}..${latest}`;
+  try {
+    const points = await readWhiteMaizeWindow(state.request.county, oldest, latest);
+    const stats = cleanAndSummarize(points.map((point) => ({ date: point.date, price: point.price })));
+    const matched = stats.n === n
+      && stats.latestDate === latest
+      && closeEnough(stats.p10, p10)
+      && closeEnough(stats.p50, p50)
+      && closeEnough(stats.p90, p90);
+    traceEvent({
+      action: "verify_claim",
+      input_summary: summarySql,
+      output_summary: `n=${stats.n} p10=${Math.round(stats.p10)} p50=${Math.round(stats.p50)} p90=${Math.round(stats.p90)} newest=${stats.latestDate} match=${matched}`,
+      target_agent: "MarketAnalyst",
+      confidence: null,
+      retry_count: state.revision_counts.total + state.refresh_counts.total,
+      status: matched ? "success" : "needs_revision",
+    });
+    if (matched) return decision;
+    decision.action = "reject";
+    decision.confidence = 0.45;
+    decision.notes.push(
+      `Verification mismatch: Zetaris recomputed n=${stats.n}, P50 ${Math.round(stats.p50)}, newest ${stats.latestDate}.`,
+    );
+    if (!decision.target_agents.includes("MarketAnalyst")) decision.target_agents.push("MarketAnalyst");
+    return decision;
+  } catch (error) {
+    const unreachable = error instanceof RemoteSourceError && error.unreachable;
+    traceEvent({
+      action: "verify_claim",
+      input_summary: summarySql,
+      output_summary: unreachable && loadConfig().SAMPLE_MODE
+        ? "offline mode: numeric check skipped"
+        : (error instanceof Error ? error.message : "verification failed"),
+      target_agent: "MarketAnalyst",
+      confidence: null,
+      retry_count: 0,
+      status: unreachable && loadConfig().SAMPLE_MODE ? "fallback" : "error",
+    });
+    if (unreachable && loadConfig().SAMPLE_MODE) return decision;
+    decision.action = "reject";
+    decision.confidence = 0.45;
+    decision.notes.push("Verification could not recompute the price claim from Zetaris.");
+    if (!decision.target_agents.includes("MarketAnalyst")) decision.target_agents.push("MarketAnalyst");
+    return decision;
+  }
+}
+
 export async function reviewClaims(state: CaseState): Promise<CriticDecision> {
-  const decision = judgeClaims({
+  const decision = await verifyMarketClaim(state, judgeClaims({
     today: state.today,
     bags: state.request.bags,
     storage: state.request.storage,
@@ -163,7 +229,7 @@ export async function reviewClaims(state: CaseState): Promise<CriticDecision> {
     market: latestClaim(state, "MarketAnalyst") ?? null,
     storageClaim: latestClaim(state, "StorageWeatherAnalyst") ?? null,
     staleDays: loadConfig().STALE_DAYS,
-  });
+  }));
   const note = await chat({
     agent: "RiskCritic",
     system: "You are a risk critic. Reply with one sentence on evidence quality. Do not change the action code you are given.",

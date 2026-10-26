@@ -31,6 +31,11 @@ const EnvSchema = z.object({
   ZETARIS_MAIZE_DIR: z.string().min(1).default("/home/zetaris/customer-data/shared/maize"),
   REFRESH_ENABLED: z.enum(["true", "false"]).default("true").transform((value) => value === "true"),
   REFRESH_TTL_MINUTES: z.coerce.number().int().min(0).max(10_080).default(360),
+  MAIZE_PG_HOST: z.string().min(1).default("127.0.0.1"),
+  MAIZE_PG_PORT: z.coerce.number().int().positive().default(5433),
+  MAIZE_PG_USER: z.string().min(1).default("maize"),
+  MAIZE_PG_PASSWORD: z.string().default(""),
+  MAIZE_PG_DATABASE: z.string().min(1).default("maize"),
 });
 
 export type AppConfig = z.infer<typeof EnvSchema>;
@@ -91,7 +96,7 @@ export function resetConfigForTests(): void {
 /** Replace known secret values before anything is written to a log or a response. */
 export function redact(text: string): string {
   let out = text;
-  for (const key of ["ZETARIS_API_KEY", "ZETARIS_ORG_ID", "METERLESS_RUNTIME_TOKEN", "NVIDIA_API_KEY"]) {
+  for (const key of ["ZETARIS_API_KEY", "ZETARIS_ORG_ID", "METERLESS_RUNTIME_TOKEN", "NVIDIA_API_KEY", "MAIZE_PG_PASSWORD", "ZETARIS_PASSWORD", "ZETARIS_ADMIN_PASSWORD"]) {
     const value = process.env[key];
     if (value && value.length >= 4) out = out.split(value).join("[redacted]");
   }

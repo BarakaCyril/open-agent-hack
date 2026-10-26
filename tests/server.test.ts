@@ -1,9 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { setSqlRunnerForTests } from "../src/adapters/zetaris.js";
 import { buildServer } from "../src/server.js";
 import { METERLESS_PROVIDER_NAME, METERLESS_TOKEN_KEY } from "../src/adapters/meterless.js";
 import { resetConfigForTests } from "../src/config.js";
 
 describe("server", () => {
+  afterEach(() => setSqlRunnerForTests(null));
+
   it("answers GET /health", async () => {
     const app = buildServer();
     const response = await app.inject({ method: "GET", url: "/health" });
@@ -47,6 +50,32 @@ describe("server", () => {
       payload: { model: "gpt-4" },
     });
     expect(response.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("lists maize.counties with coverage from kamis_prices", async () => {
+    setSqlRunnerForTests(async (sql) => {
+      if (sql.includes("FROM maize.counties")) {
+        return [{ county: "Kirinyaga" }, { county: "Garissa" }, { county: "Uasin Gishu" }];
+      }
+      return [{ county: "Kirinyaga", n: 8 }, { county: "Garissa", n: 1 }, { county: "Uasin Gishu", n: 3 }];
+    });
+    const app = buildServer();
+    const response = await app.inject({ method: "GET", url: "/counties" });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as { source: string; counties: Array<{ county: string; coverage: string }> };
+    expect(body.source).toBe("zetaris");
+    expect(body.counties.map((row) => row.county)).toEqual(["Kirinyaga", "Garissa", "Uasin Gishu"]);
+    expect(body.counties.find((row) => row.county === "Garissa")?.coverage).toBe("limited");
+    expect(body.counties.find((row) => row.county === "Kirinyaga")?.coverage).toBe("supported");
+    await app.close();
+  });
+
+  it("returns 404 for an unknown trace", async () => {
+    const app = buildServer();
+    const response = await app.inject({ method: "GET", url: "/trace/00000000-0000-4000-8000-000000000000" });
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({ error: "trace not found" });
     await app.close();
   });
 

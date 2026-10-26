@@ -7,19 +7,28 @@ import { projectRoot } from "../src/config.js";
 import { runBoundedLoop } from "../src/orchestration/graph.js";
 import { continueAfterCritique } from "../src/orchestration/refresh.js";
 import { createInitialState } from "../src/orchestration/state.js";
-import { lookupCounty } from "../src/tools/counties.js";
+import type { PgClient } from "../src/adapters/maizePg.js";
 import { parseKamisWorkbook } from "../src/tools/kamisSheet.js";
 import { hostDirectoryProblem, upsertPriceFile, upsertWeatherFile } from "../src/tools/maizeFiles.js";
 import { kamisExportUrl, refreshKamis, robotsAllows } from "../src/tools/refreshKamis.js";
-import type { RefreshReport } from "../src/tools/refreshReport.js";
-import { parseOpenMeteoForecast, refreshWeather, type FetchLike } from "../src/tools/refreshWeather.js";
+import type { FetchLike, RefreshReport } from "../src/tools/refreshReport.js";
 import { chooseLatestSeries } from "../src/tools/weatherSeries.js";
 import { recordRefreshSuccess } from "../src/tools/refreshState.js";
 import { mixedAgeNote } from "../src/orchestration/state.js";
 import { createTracer, runContext, type RunContext } from "../src/tracing.js";
 
 const kamisFixture = path.join(projectRoot(), "tests", "fixtures", "kamis-market-export.xls");
-const meteoFixture = path.join(projectRoot(), "tests", "fixtures", "open-meteo-kirinyaga.json");
+
+function memoryPg(): PgClient & { params: unknown[][] } {
+  const params: unknown[][] = [];
+  return {
+    params,
+    async query(sql, values) {
+      if (sql.startsWith("INSERT")) params.push(values ?? []);
+      return { rows: [], rowCount: sql.startsWith("INSERT") ? 1 : 0 };
+    },
+  };
+}
 
 function tempDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -32,10 +41,6 @@ function bytesResponse(body: Buffer, status = 200): Awaited<ReturnType<FetchLike
     text: async () => body.toString("utf8"),
     arrayBuffer: async () => body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) as ArrayBuffer,
   };
-}
-
-function mean(values: number[]): number {
-  return Math.round((values.reduce((sum, value) => sum + value, 0) / values.length) * 10) / 10;
 }
 
 const okReport: RefreshReport = { status: "success", fetched: 1, stored: 1, rejected: 0, detail: "ok" };
@@ -70,28 +75,6 @@ describe("live refresh parsers", () => {
     expect(parsed.rows.find((row) => row.county === "Uasin Gishu")?.wholesale_price_kes).toBe(4799.7);
     expect(parsed.rows.find((row) => row.market_name === "Kawangware")?.volume_bags).toBe(0);
     expect(parsed.rows.some((row) => row.county.toLowerCase() === "test" || row.market_name === "test market")).toBe(false);
-  });
-
-  it("derives daily humidity from hourly relative humidity", () => {
-    const body = JSON.parse(fs.readFileSync(meteoFixture, "utf8")) as {
-      daily: { precipitation_sum: Array<number | null>; temperature_2m_mean: number[]; relative_humidity_2m_mean?: number[] };
-      hourly: { relative_humidity_2m: number[] };
-    };
-    expect(body.daily.relative_humidity_2m_mean).toBeUndefined();
-    const parsed = parseOpenMeteoForecast(body, "Kirinyaga", "2026-10-24");
-    expect(parsed.rejected).toBe(0);
-    expect(parsed.series?.source).toBe("open-meteo");
-    expect(parsed.series?.as_of).toBe("2026-10-24");
-    expect(parsed.series?.days.map((day) => day.rain_mm)).toEqual([2.1, 1.2]);
-    expect(parsed.series?.days.map((day) => day.temp_c)).toEqual([19.3, 19.5]);
-    expect(parsed.series?.days[0]?.humidity_pct).toBe(mean(body.hourly.relative_humidity_2m.slice(0, 24)));
-    expect(parsed.series?.days[1]?.humidity_pct).toBe(mean(body.hourly.relative_humidity_2m.slice(24, 48)));
-    expect(parsed.series?.days.every((day) => day.as_of === "2026-10-24" && day.source === "open-meteo")).toBe(true);
-
-    body.daily.precipitation_sum[0] = null;
-    const dropped = parseOpenMeteoForecast(body, "Kirinyaga", "2026-10-24");
-    expect(dropped.rejected).toBe(1);
-    expect(dropped.series?.days.map((day) => day.rain_mm)).toEqual([1.2]);
   });
 
   it("reads robots.txt and refuses a disallowed market path", () => {
@@ -137,9 +120,13 @@ describe("filestore upsert", () => {
     const sample = path.join(projectRoot(), "data", "sample", "weather.json");
     const before = fs.readFileSync(sample);
     const dir = tempDir("weather-");
-    const parsed = parseOpenMeteoForecast(JSON.parse(fs.readFileSync(meteoFixture, "utf8")) as unknown, "Kirinyaga", "2026-10-24");
-    const series = parsed.series;
-    if (!series) throw new Error("fixture produced no series");
+    const series = {
+      county: "Kirinyaga",
+      as_of: "2026-10-24",
+      source: "open-meteo",
+      synthetic: false,
+      days: [{ date: "2026-10-24", rain_mm: 2.1, humidity_pct: 70, temp_c: 19.3, as_of: "2026-10-24", source: "open-meteo" }],
+    };
     upsertWeatherFile(series, dir);
     upsertWeatherFile({ ...series, as_of: "2026-10-23", days: series.days.map((day) => ({ ...day, as_of: "2026-10-23" })) }, dir);
     const stored = JSON.parse(fs.readFileSync(path.join(dir, "weather.json"), "utf8")) as {
@@ -163,76 +150,16 @@ describe("filestore upsert", () => {
 });
 
 describe("refresh tools", () => {
-  it("does not call Open-Meteo when the county has no coordinates", async () => {
-    let called = false;
-    const report = await refreshWeather("Kirinyaga County", {
-      stateFile: path.join(tempDir("refresh-state-"), "state.json"),
-      fetch: async () => {
-        called = true;
-        return bytesResponse(Buffer.from("{}"));
-      },
-    });
-    expect(lookupCounty("Kirinyaga")?.source).toContain("Nominatim");
-    expect(lookupCounty("Kirinyaga County")).toBeNull();
-    expect(called).toBe(false);
-    expect(report.status).toBe("error");
-    expect(report.stored).toBe(0);
-  });
-
-  it("requests the county centroid when the host directory can be written", async () => {
-    const cacheDir = tempDir("meteo-cache-");
-    const maizeDir = tempDir("meteo-maize-");
-    let requested = "";
-    const dir = tempDir("trace-meteo-");
-    const tracer = createTracer("abcdef12-0000-4000-8000-000000000002", dir, { county: "Kirinyaga", mode: "advise" });
-    const ctx: RunContext = {
-      tracer,
-      agent: "Planner",
-      queryCache: new Map(),
-      dataSource: () => null,
-      markSampleFallback: () => undefined,
-      markNarrativeFallback: () => undefined,
-      modelAnswer: { provider: null, model: null },
-    };
-    const report = await runContext.run(ctx, () => refreshWeather("Kirinyaga", {
-      cacheDir,
-      maizeDir,
-      stateFile: path.join(cacheDir, "state.json"),
-      now: () => new Date("2026-10-24T08:00:00Z"),
-      fetch: async (url, init) => {
-        requested = url;
-        expect(init?.headers?.["User-Agent"]).toContain("open-agent-maize");
-        return bytesResponse(fs.readFileSync(meteoFixture));
-      },
-    }));
-    expect(requested).toContain("latitude=-0.468878");
-    expect(requested).toContain("longitude=37.3027681");
-    expect(requested).toContain("precipitation_sum");
-    expect(requested).toContain("relative_humidity_2m");
-    expect(report.status).toBe("success");
-    expect(report.fetched).toBe(2);
-    expect(report.stored).toBe(2);
-    expect(fs.existsSync(path.join(maizeDir, "weather.json"))).toBe(true);
-    expect(fs.readdirSync(cacheDir).some((name) => name.endsWith(".json"))).toBe(true);
-    expect(tracer.events.map((event) => event.action)).toContain("refresh_weather");
-    expect(tracer.events[0]?.output_summary).toContain("rows fetched 2");
-    expect(tracer.events[0]?.output_summary).toContain("rows stored 2");
-    expect(tracer.events[0]?.status).toBe("success");
-    tracer.finish();
-  });
-
   it("follows the export link, throttles, and counts rejected rows", async () => {
     expect(kamisExportUrl(0, 10)).toBe("https://kamis.kilimo.go.ke/site/market?product=1&per_page=10&export=excel");
     expect(kamisExportUrl(10, 10)).toBe("https://kamis.kilimo.go.ke/site/market/10?product=1&per_page=10&export=excel");
     const cacheDir = tempDir("kamis-cache-");
-    const maizeDir = tempDir("kamis-maize-");
     const calls: string[] = [];
     const gaps: number[] = [];
     const workbook = fs.readFileSync(kamisFixture);
     const blocked = await refreshKamis({
       pauseMs: 0,
       cacheDir,
-      maizeDir,
       stateFile: path.join(cacheDir, "state.json"),
       fetch: async (url) => {
         calls.push(url);
@@ -242,12 +169,13 @@ describe("refresh tools", () => {
     expect(blocked.status).toBe("error");
     expect(calls).toHaveLength(1);
 
+    const pg = memoryPg();
     const report = await refreshKamis({
       pauseMs: 2000,
       perPage: 10,
       maxPages: 2,
       cacheDir,
-      maizeDir,
+      pg,
       stateFile: path.join(cacheDir, "state.json"),
       sleep: async (ms) => {
         gaps.push(ms);
@@ -264,7 +192,8 @@ describe("refresh tools", () => {
     expect(report.fetched).toBe(3);
     expect(report.stored).toBe(3);
     expect(report.rejected).toBe(7);
-    expect(fs.readFileSync(path.join(maizeDir, "kamis_dry_maize.csv"), "utf8")).toContain("4200.3");
+    expect(pg.params.some((values) => values.includes(4200.3))).toBe(true);
+    expect(pg.params.every((values) => values.length === 10)).toBe(true);
     expect(fs.existsSync(path.join(cacheDir, "robots.txt"))).toBe(true);
     expect(fs.existsSync(path.join(cacheDir, "export-0-per-10.xls"))).toBe(true);
   });
@@ -342,10 +271,7 @@ describe("refresh loop cap", () => {
     expect(weather).toBe(0);
   });
 
-  it("traces refresh_unavailable when the host directory is missing and does not create it", async () => {
-    const missing = path.join(os.tmpdir(), `missing-maize-${Date.now()}`);
-    fs.rmSync(missing, { recursive: true, force: true });
-    let called = false;
+  it("traces refresh_unavailable when Postgres refuses the upsert", async () => {
     const dir = tempDir("trace-missing-");
     const tracer = createTracer("abcdef12-0000-4000-8000-000000000003", dir, { county: "Kirinyaga", mode: "advise" });
     const ctx: RunContext = {
@@ -357,19 +283,25 @@ describe("refresh loop cap", () => {
       markNarrativeFallback: () => undefined,
       modelAnswer: { provider: null, model: null },
     };
-    const report = await runContext.run(ctx, () => refreshWeather("Kirinyaga", {
-      maizeDir: missing,
+    const report = await runContext.run(ctx, () => refreshKamis({
+      pauseMs: 0,
+      maxPages: 1,
+      cacheDir: dir,
       stateFile: path.join(dir, "state.json"),
-      fetch: async () => {
-        called = true;
-        return bytesResponse(Buffer.from("{}"));
+      pg: {
+        query: async () => {
+          throw new Error("connect ECONNREFUSED 127.0.0.1:5433");
+        },
+      },
+      fetch: async (url) => {
+        if (url.endsWith("/robots.txt")) return bytesResponse(Buffer.from("missing"), 404);
+        return bytesResponse(fs.readFileSync(kamisFixture));
       },
     }));
-    expect(called).toBe(false);
     expect(report.status).toBe("fallback");
     expect(report.unavailable).toBe(true);
     expect(report.stored).toBe(0);
-    expect(fs.existsSync(missing)).toBe(false);
+    expect(fs.existsSync(path.join(dir, "kamis_dry_maize.csv"))).toBe(false);
     const unavailable = tracer.events.find((event) => event.action === "refresh_unavailable");
     expect(unavailable?.output_summary).toMatch(/^refresh_unavailable: /);
     const state = caseState();
@@ -377,11 +309,11 @@ describe("refresh loop cap", () => {
       action: "reject",
       reasons: ["freshness"],
       notes: [],
-      target_agents: ["StorageWeatherAnalyst"],
+      target_agents: ["MarketAnalyst"],
       confidence: 0.4,
     };
     await continueAfterCritique("refresh", state, 1, {
-      weather: async () => report,
+      prices: async () => report,
     });
     expect(state.refresh_limits).toEqual([`refresh_unavailable: ${report.detail}`]);
     tracer.finish();
@@ -412,19 +344,18 @@ describe("refresh loop cap", () => {
     expect(recent.status).toBe("skipped");
     expect(recent.detail).toContain("REFRESH_TTL_MINUTES (360)");
 
-    const maizeDir = tempDir("refresh-old-");
-    const stale = await refreshWeather("Kirinyaga", {
-      maizeDir,
+    const stale = await refreshKamis({
       stateFile,
       ttlMinutes: 360,
-      now: () => new Date(now.getTime() + 361 * 60_000),
+      pauseMs: 0,
+      now: new Date(now.getTime() + 361 * 60_000),
       fetch: async () => {
         called += 1;
-        return bytesResponse(fs.readFileSync(meteoFixture));
+        return bytesResponse(Buffer.from("unavailable"), 503);
       },
     });
     expect(called).toBe(1);
-    expect(stale.status).toBe("success");
+    expect(stale.status).toBe("error");
   });
 
   it("refuses to overwrite a fixture or the sample directory", () => {

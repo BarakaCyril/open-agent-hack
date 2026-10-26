@@ -18,7 +18,7 @@ A smallholder white-maize farmer. The request names the farmer, the county, the 
 | --- | --- | --- |
 | Planner | Loads memory, runs the per-county coverage gate, delegates, assembles the verdict from the expected-value tool, and sets the recheck date. | Blocks the run with `no_recommendation` when fresh white-maize quotes are below 3, or when the review loop gives up. |
 | MarketAnalyst | Reads prices through the Zetaris helpers, drops outliers, builds P10/P50/P90, compares the offer with the county P50, and filters news to white maize. | Revises the claim when the critic rejects it (maize-type mismatch, contradiction, outlier, missing evidence). |
-| StorageWeatherAnalyst | Reads the forecast and the storage-loss rules and turns them into an expected-loss distribution. | Revises, or refreshes when the critic marks the forecast stale. |
+| StorageWeatherAnalyst | Reads `maize.weather_daily` for the requested county and the storage-loss rules, then turns them into an expected-loss distribution. | Revises when the critic rejects the claim. The forecast is the live Open-Meteo view, so there is no file refresh. |
 | RiskCritic | Applies freshness, coverage, contradiction, missing evidence, outlier, maize-type mismatch, missing input, and farmer-limit checks. | Approves, sends the claim back, or escalates to a farmer question. |
 | Watcher | On `mode: "recheck"`, loads the prior verdict from memory or the farmer ledger and compares it with the new run. | Records a HOLD to SELL change when the computed action is now sell and 7-day rain has risen by at least 10 mm. |
 
@@ -56,7 +56,7 @@ The browser talks to Fastify; it must not connect to Zetaris directly. The Vite 
 
 If Fastify itself runs inside Docker, `127.0.0.1` points at the backend container. Use `host.docker.internal` for a Zetaris port published on the Windows host, or the Zetaris service name and internal port when both services share a Docker network. The host, port, and published route must match the running Zetaris deployment; copying the repo cannot start or configure that external stack by itself.
 
-The five `maize` views must already exist and be loaded on the Zetaris side. A clean clone does not create or populate them automatically; follow the setup steps below. A successful connectivity check proves queries work, while a useful recommendation also requires fresh prices and forecasts. The API reports `data_source`; check it is `zetaris` during a live-data demo and confirm evidence freshness before claiming a recommendation.
+The maize views are created by the setup order below. A successful connectivity check proves queries work. The API reports `data_source`; a live demo should show `zetaris`. Evidence from `maize.storage_loss_rules`, `maize.market_news`, and `maize.farmer_ledger` is labelled synthetic.
 
 Never commit `.env`, a JWT, API key, organisation-specific secret, or admin password. `.env.example` is a template only. Each teammate creates their own `.env` after cloning.
 
@@ -81,19 +81,52 @@ Count the rows in each `maize` table (prints the count, or FAIL):
 npx tsx scripts/check_zetaris_tables.ts
 ```
 
+## What is live and what is synthetic
+
+Live:
+
+- `maize.weather_daily` is one Open-Meteo REST table per county in `OPEN_METEO`. A read is always `WHERE county = '<requested>'`, so only that county's endpoint is called. The connectivity check counts Kirinyaga only, for the same reason. Humidity is the daily mean of hourly `relative_humidity_2m`. The forecast is fetched when the view is queried, so its freshness is same-day.
+- `maize.kamis_prices` reads the Postgres container `maize-db` (Zetaris datasource `maize_pg`). `refresh_kamis` parses the live KAMIS Excel export and upserts those parsed rows with `INSERT ... ON CONFLICT DO UPDATE`. It does not write price files and it does not insert hand-written rows.
+
+Synthetic, loaded once from `data/sample/` and flagged in the view:
+
+- `maize.storage_loss_rules`
+- `maize.market_news`
+- `maize.farmer_ledger`
+
+`maize.counties` is the seven sourced centroids in `data/counties.csv`. It is not a synthetic farmer profile. `maize.county_case` joins that county's latest price statistics, its forecast, and the storage rules in one statement. The run traces that query once.
+
+## Setup order
+
+1. Copy `.env.example` to `.env`. Set the Zetaris REST values and `MAIZE_PG_PASSWORD`. The host and port default to `127.0.0.1:5433`. Do not point `MAIZE_PG_*` at the Zetaris metadata database.
+2. `bash scripts/setup_zetaris.sh` starts `maize-db` from `docker/maize-db.compose.yml` on the `zetaris_default` network, waits until it is healthy, and copies `data/counties.csv` plus the sample reference files into `zetaris-driver-1:/home/zetaris/customer-data/shared/maize/`.
+3. The script runs `npm run setup:zetaris`, which sends `zetaris/setup_maize.sql` over REST one statement at a time and prints PASS or FAIL. An "already exists" error is a PASS. It stops before the `-- @seed` marker.
+4. `npm run seed:zetaris` creates `kamis_prices` if needed and loads `data/sample/kamis_dry_maize.csv` into Postgres. The log names that file as a sample export, and names the three synthetic views.
+5. The script runs `npm run setup:zetaris -- --after-seed`, which registers datasource `maize_pg` and replaces `maize.kamis_prices` with the Postgres view. The password stays in `.env`. The SQL file contains the token `MAIZE_PG_PASSWORD`.
+
+`GET /counties` returns the rows in `maize.counties`. A county with at least 3 dry-maize quotes in the last 14 days is `supported`; otherwise it is `limited`. The phone dropdown lists only those counties. `POST /run` with any other county returns HTTP 400 `unknown_county`.
+
+## Seven counties and the centroid limit
+
+`data/counties.csv` has seven counties, not all 47. Each latitude and longitude is an OpenStreetMap Nominatim relation centroid (ODbL). Open-Meteo snaps a request to its own grid cell, so the returned coordinates are not the centroid. The REST table name carries the county. Do not join a forecast back to `maize.counties` on the latitude and longitude in the API response.
+
+## Offline mode
+
+`SAMPLE_MODE=true` reads `data/sample/` only when Zetaris is unreachable (no HTTP response). The trace says `offline mode` and `data_source` is `sample`. A query that Zetaris answers and then rejects is an error. It is never replaced with sample rows. `SAMPLE_MODE=false` and an unreachable Zetaris return HTTP 503 `{ "code": "zetaris_unavailable" }`. A reachable query failure returns HTTP 502 `{ "code": "zetaris_query_failed" }`. The sample loader is the seed script and this offline path. Agents do not read the files themselves.
+
 ## Zetaris data setup
 
-The agents read schema-store views, not the raw files:
+The agents read schema-store views through `src/adapters/zetaris.ts`:
 
 | View | Columns the adapter selects |
 | --- | --- |
 | `maize.kamis_prices` | `market_date`, `county`, `market_name`, `commodity`, `variety`, `grade`, `unit_kg`, `wholesale_price_kes`, `retail_price_kes`, `volume_bags` |
 | `maize.weather_daily` | `county`, `as_of`, `source`, `forecast_date`, `rain_mm`, `humidity_pct`, `temp_c` |
-| `maize.market_news` | `id`, `as_of`, `county`, `maize_type`, `status`, `direction`, `headline`, `commodity` |
-| `maize.storage_loss_rules` | `storage`, `rain_mm_min`, `humidity_min`, `daily_loss_pct` |
-| `maize.farmer_ledger` | `farmer_id`, `county`, `as_of`, `record_type`, `verdict`, `hold_days`, `bags`, `storage`, `forecast_rain_mm_7d`, `notes` |
+| `maize.market_news` | `id`, `as_of`, `county`, `maize_type`, `status`, `direction`, `headline`, `commodity`, `synthetic` |
+| `maize.storage_loss_rules` | `storage`, `rain_mm_min`, `humidity_min`, `daily_loss_pct`, `synthetic` |
+| `maize.farmer_ledger` | `farmer_id`, `county`, `as_of`, `record_type`, `verdict`, `hold_days`, `bags`, `storage`, `forecast_rain_mm_7d`, `notes`, `synthetic` |
 
-Those views sit in the schema-store container `maize`. The files behind them are Lightning tables in database `MAIZE_FILES`, stored on the Zetaris host:
+News, rules, and the ledger are filestore views over files copied into the driver. Prices are the Postgres view. Weather is the Open-Meteo REST view. The copied files are:
 
 | Host file | Lightning table |
 | --- | --- |
@@ -103,42 +136,23 @@ Those views sit in the schema-store container `maize`. The files behind them are
 | `/home/zetaris/customer-data/shared/maize/storage_loss_rules.csv` | `MAIZE_FILES.storage_loss_rules_raw` |
 | `/home/zetaris/customer-data/shared/maize/farmer_ledger.json` | `MAIZE_FILES.farmer_ledger_raw` |
 
-`weather_daily` explodes `series` and each series `days`. `market_news` explodes `items`. `farmer_ledger` explodes `entries`. `storage_loss_rules` keeps the four numeric columns and leaves out `synthetic` and `note`.
-
-A clean clone has `data/sample/` and does not create the remote schema by itself. The views read files on the Zetaris host. `ZETARIS_MAIZE_DIR` (default `/home/zetaris/customer-data/shared/maize`) is that directory. To load the five sample files onto a host directory that already exists and is writable:
-
-```bash
-npm run load:sample
-```
-
-`scripts/load_sample_into_zetaris.ts` copies `kamis_dry_maize.csv`, `weather.json`, `news.json`, `storage_loss_rules.csv`, and `farmer_ledger.json` from `data/sample/` into `ZETARIS_MAIZE_DIR`, keeping those file names. It does not create `/home/zetaris`, and it refuses to write into `data/sample/` or `data/fixtures/`. The Lightning filestore reads those paths on the next query. The views are not insertable.
-
-If `MAIZE_FILES` and the `maize` views are already registered, stop after the copy. Run `npx tsx scripts/check_zetaris_tables.ts` and confirm each table returns a count. If the organisation has no `maize` container, open `scripts/zetaris_maize_setup.sql` and run each statement on its own in the Zetaris SQL editor. `CREATE LIGHTNING DATABASE` and `CREATE SCHEMASTORE CONTAINER` fail when the name already exists; skip those. Then run the count script.
-
-Do not point `ZETARIS_REST_URL` at port 8889.
+`market_news` explodes `items`. `farmer_ledger` explodes `entries`. Both views, and `storage_loss_rules`, project `synthetic`. Do not point `ZETARIS_REST_URL` at port 8889. `npm run load:sample` only copies sample files into a host directory that already exists. The agent path does not use it. Use `scripts/setup_zetaris.sh` instead.
 
 ## Live refresh
 
-`maize.kamis_prices` and `maize.weather_daily` are schema-store views. They are not insertable. A refresh writes the same Lightning filestore files the initial load copies onto the Zetaris host:
+`npx tsx scripts/refresh_kamis.ts` keeps the KAMIS throttle, `robots.txt` check, raw cache under `data/cache/`, and page cap. Parsed rows are upserted into Postgres on `MAIZE_PG_HOST`:`MAIZE_PG_PORT` (default `127.0.0.1:5433`). The primary key is `market_date, county, market_name, commodity, variety, grade, unit_kg`. A successful write clears the SQL cache. If Postgres cannot be written, the trace is `refresh_unavailable` and that line is added to `limitations`. There is no weather file refresh.
 
-| Script | Host file | View |
-| --- | --- | --- |
-| `npx tsx scripts/refresh_kamis.ts` | `$ZETARIS_MAIZE_DIR/kamis_dry_maize.csv` | `maize.kamis_prices` |
-| `npx tsx scripts/refresh_weather.ts <county>` | `$ZETARIS_MAIZE_DIR/weather.json` | `maize.weather_daily` |
+`REFRESH_ENABLED` defaults to true. Set it to `false` and the price refresh does not call the network. After a successful write, the time is stored in `data/cache/refresh_state.json` (gitignored). A later refresh is skipped while the stamp is newer than `REFRESH_TTL_MINUTES` (default 360). The trace action is `refresh_skipped`.
 
-`ZETARIS_MAIZE_DIR` defaults to `/home/zetaris/customer-data/shared/maize`. The filestore reads those paths on the next query, which is the same route as `npm run load:sample`. Rows are upserted: a repeated market quote replaces that quote, and an older date stays. A new Open-Meteo issue for a county replaces that county's synthetic series and the same issue date. Other counties, and older Open-Meteo issue dates, stay in the file. If the host directory is missing or not writable, the script does not create it, does not report the rows as stored, and the trace records `refresh_unavailable: <reason>`. That same line is added to the response `limitations`. The analysts then keep the rows already in Zetaris or, when that read fails in sample mode, the files in `data/sample/`. Refresh never writes `data/sample/` or `data/fixtures/`.
-
-`REFRESH_ENABLED` defaults to true. Set it to `false` and the refresh tools do not call the network. After a successful write, the time is stored per source in `data/cache/refresh_state.json` (gitignored). A later refresh for that source is skipped while the stamp is newer than `REFRESH_TTL_MINUTES` (default 360). The trace action is `refresh_skipped`, with the reason. A skipped refresh is not a new pull, so repeated `/run` calls do not hammer KAMIS or Open-Meteo.
-
-The forecast comes from the Open-Meteo forecast API. No API key. Daily fields are `precipitation_sum` and `temperature_2m_mean`. The forecast API has no daily humidity field, so humidity is the mean of that day's hourly `relative_humidity_2m`. Coordinates are looked up in `data/counties.csv`. A county that is not in that file is an error. The forecast is not requested with a guessed point. Weather data by [Open-Meteo.com](https://open-meteo.com/), licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The county coordinates are © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright), available under the [Open Database Licence (ODbL)](https://opendatacommons.org/licenses/odbl/).
+Weather data by [Open-Meteo.com](https://open-meteo.com/), licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The county coordinates are © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright), available under the [Open Database Licence (ODbL)](https://opendatacommons.org/licenses/odbl/).
 
 KAMIS prices use the market-page export at `https://kamis.kilimo.go.ke/site/market`: Dry Maize is `product=1`, the entries control is `per_page`, and the Export to Excel control adds `export=excel`. Later pages use the same query with the row offset in the path (`/site/market/100` is the second page when `per_page` is 100). The client sends `User-Agent: open-agent-maize/0.1 (maize decision support)`, waits 2 seconds between requests, and saves raw responses under `data/cache/` (gitignored). `KAMIS_MAX_PAGES` defaults to 2 and `KAMIS_PER_PAGE` defaults to 100 (one of 10, 50, 100, 500, 1500, 3000). `robots.txt` is fetched first. HTTP 404 means the site published no rules, and the export still waits 2 seconds. A failed robots fetch stops the run. KAMIS terms of use are unconfirmed.
 
 The sheet shows wholesale and retail per kilogram. Stored prices are that figure times 90, because the price tools keep white maize only when `unit_kg` is 90. Supply volume is stored as the number in the sheet. A row is dropped when wholesale or retail is blank, the county or market is the site's `test` placeholder, or the cells do not match the row schema. The run logs how many rows were rejected.
 
-`STALE_DAYS` defaults to 3. RiskCritic rejects a claim when the newest price date or the forecast issue date is older than that. A price window is mixed when the oldest quote and the newest quote are more than 21 days apart. The percentile band then blends a stale quote with a current one, so it is not one market moment. The response states that in `limitations` and in `reasoning_trace_summary` as mixed-age prices, including the two dates and the span. On a freshness rejection the planner calls `refresh_kamis` for prices and `refresh_weather` for the county forecast, then the analysts query Zetaris again, unless the TTL or `REFRESH_ENABLED=false` skips the network. The SQL cache is cleared only after a file is actually written. The loop allows 2 refreshes. Each network pull is a trace line `refresh_kamis` or `refresh_weather` with rows fetched, rows stored, and status. A failed refresh keeps the previous rows. Evidence then shows that older `as_of`, not the time of the failed attempt.
+`STALE_DAYS` defaults to 3. RiskCritic rejects a price claim when the newest quote is older than that. A live Open-Meteo forecast is same-day, so the forecast freshness check passes. A price window is mixed when the oldest quote and the newest quote are more than 21 days apart. The percentile band then blends a stale quote with a current one, so it is not one market moment. The response states that in `limitations` and in `reasoning_trace_summary`. On a price freshness rejection the planner calls `refresh_kamis`, then the analysts query Zetaris again, unless the TTL or `REFRESH_ENABLED=false` skips the network. The loop allows 2 refreshes. Before it approves a numeric price claim, RiskCritic runs its own Zetaris query for the count, percentiles, and newest date. The trace action is `verify_claim`. A mismatch rejects the claim.
 
-Claim evidence is `<origin> via zetaris:<table>` or `<origin> via sample:<file>`. Price origin is `kamis` only for the KAMIS extract. Forecast origin is the series source, such as `open-meteo` or `synthetic-forecast`. A planted critic case is selected with `"fixture": "dirty"` (see `input_examples/example_3.json`) and its evidence source is `fixture:data/fixtures/dirty_market.json`. Synthetic news stays `synthetic-news`, and synthetic storage rules stay `synthetic-storage-rules`. Those origins are not relabelled as KAMIS, Open-Meteo, or a real market notice. `as_of` is the quote date or the forecast issue date. Freshness is `same-day`, `Nd`, or `stale-Nd` from `STALE_DAYS`. News and storage rules that have no observation date are `undated`.
+Claim evidence is `<origin> via zetaris:<table>` or, in offline mode, `<origin> via sample:<file>`. Origin is `kamis`, `open-meteo`, or `synthetic`. A planted critic case is selected with `"fixture": "dirty"` (see `input_examples/example_3.json`) and its evidence source is `fixture:data/fixtures/dirty_market.json`. Synthetic rows also set `synthetic: true` on the evidence object, which the phone screen shows. `as_of` is the quote date or the forecast issue date. Freshness is `same-day`, `Nd`, or `stale-Nd` from `STALE_DAYS`. News and storage rules that have no observation date are `undated`.
 
 ## Usage
 
@@ -161,15 +175,15 @@ curl -s -X POST http://localhost:8000/run \
 
 ## Sample mode
 
-`SAMPLE_MODE=true` loads input rows from `data/sample/` only after a live Zetaris call fails or times out. It does not load a verdict. The response field `data_source` is `zetaris` when every read hit `maize.<table>`, `sample` when every read used a file, and `mixed` when both happened. The route inside a claim is `zetaris:<table>` or `sample:<file>`, prefixed with the origin (`kamis`, `open-meteo`, `synthetic-forecast`, and the same pattern for news and rules). A fallback is also a trace line with status `fallback`, and the closing trace line repeats `data_source`. `SAMPLE_MODE=false` returns the source error instead of substituting the sample files. A timeout retries once with a narrower SELECT, then follows that same rule. Identical SQL inside one run is cached and traced as `cache`. A successful filestore refresh clears that cache before the analysts run again.
+Offline mode is described above. `data_source` is `zetaris` when every read hit a `maize` view, `sample` when Zetaris was unreachable and `SAMPLE_MODE=true`, and `mixed` when a run used both. Identical SQL inside one run is cached and traced as `cache`. A successful Postgres upsert clears that cache.
 
 ## Failure handling
 
 | Failure | What the run does |
 | --- | --- |
-| Zetaris timeout | One narrower SQL retry, then sample input if `SAMPLE_MODE=true`. Trace status `fallback`. Response `data_source` is `sample` or `mixed`. |
-| Zetaris HTTP 5xx or network error | Up to `MAX_RETRIES` with backoff, then the same sample rule. 4xx is not retried. |
-| Zetaris down and `SAMPLE_MODE=false` | The request fails with the scrubbed source error. No invented rows. |
+| Zetaris unreachable and `SAMPLE_MODE=true` | Labelled offline mode. Trace status `fallback`. Response `data_source` is `sample`. |
+| Zetaris unreachable and `SAMPLE_MODE=false` | HTTP 503 `zetaris_unavailable`. No sample rows. |
+| Zetaris answers and the query fails | HTTP 502 `zetaris_query_failed`. The error is traced. Sample rows are not substituted. |
 | Meterless 401 or 403 | Reported as unauthorized. The chat call surfaces the server message and does not treat it as offline. |
 | Meterless 429 | Waits 2s, 4s, then 8s. |
 | Meterless timeout or unreachable | Chat calls abort at 180s. Wording falls back to the computed figures. Trace status `fallback`. |
@@ -200,6 +214,46 @@ Attribution:
 - Farmer memory persists under `data/hmem` (gitignored). A record with an empty source is rejected.
 - Live reads use `maize.kamis_prices`, `maize.weather_daily`, `maize.market_news`, `maize.storage_loss_rules`, and `maize.farmer_ledger`. A fresh clone still needs the one-time load in `scripts/zetaris_maize_setup.sql` before those views exist.
 - Model text cannot change the computed verdict. If it does not match, the reply stays with the numbers.
+
+## Pre-existing components and third-party material
+
+The build window starts 22 October 2026 00:00 UTC.
+
+`git log --reverse --format="%h %ad %s" --date=iso | head -5` shows:
+
+```text
+546140c 2026-10-22 14:56:04 +0300 Add H-MEM spec and reference
+6dd879e 2026-10-22 15:44:53 +0300 Add sample data layout and example input/output folders.
+c22eaa2 2026-10-22 18:43:08 +0300 Project Structure Setup
+f7659cc 2026-10-22 19:30:37 +0300 Implement H-MEM backed MemoryPort in memory.ts, replacing the in-process memory store. Update memory recall and remember methods to utilize H-MEM for storing farmer profiles, verdicts, and offer gaps. Adjust README and other files to reflect changes in memory handling and data persistence under data/hmem. Update watcher and planner agents to accommodate new memory structure.
+323497b 2026-10-22 19:34:31 +0300 Enhance planner logic to include liquidity penalty descriptions and improve summary outputs. Update price range handling and refine evidence reporting. Add new utility functions for deduplication and no recommendation summaries. Extend tests to validate cash need penalties and ensure correct behavior with missing directories in H-MEM. Update .dockerignore to exclude new data directory.
+```
+
+No application code was committed before the window. The first commit is 2026-10-22 14:56:04 +0300, which is 11:56:04 UTC, inside the window.
+
+Pre-existing before the build window:
+
+- The KAMIS dry-maize sample export in `data/sample/kamis_dry_maize.csv`, collected 14 October 2026. It was committed during the window in `6dd879e`.
+- Planning notes and the "Shamba Council" README draft: not present in this repository. [FILL IN: path or link if they were kept outside the repo.]
+- The mobile UI in `ui/` was first committed during the window, `c41e8ab` on 2026-10-24 18:51:33 +0300. Nothing in git shows a UI before the window.
+
+Third-party and open source:
+
+- Meterless H-MEM spec and reference in `memory/hmem/`, Apache-2.0, https://github.com/Meterless/Meterless
+- Zetaris platform. Getting-started recipes: [FILL IN: title and URL of the recipe pack]. Local setup for this project is `scripts/zetaris_maize_setup.sql`.
+- Open-Meteo, CC BY 4.0, https://open-meteo.com/
+- OpenStreetMap contributors, ODbL, for `data/counties.csv`
+- KAMIS prices, Ministry of Agriculture, https://kamis.kilimo.go.ke/site/market. Terms of use are unconfirmed.
+- npm dependencies in `package.json`: fastify, zod; devDependencies @types/node, tsx, typescript, vitest.
+- npm dependencies in `ui/package.json`: clsx, lucide-react, react, react-dom, recharts, tailwind-merge; devDependencies @types/react, @types/react-dom, @vitejs/plugin-react, autoprefixer, postcss, tailwindcss, typescript, vite.
+
+Synthetic, and labelled synthetic in the files:
+
+- Farmer profiles and ledger: `data/sample/farmer_ledger.json`
+- News items: `data/sample/news.json`
+- Storage-loss rules: `data/sample/storage_loss_rules.csv`
+- Forecast series: `data/sample/weather.json`
+- Planted critic cases: `data/fixtures/dirty_market.json`
 
 ## Pre-existing components
 
@@ -247,7 +301,7 @@ npm start
 npm run ui
 ```
 
-Open `http://localhost:3001`. Vite proxies `/api/*` to the backend at `http://127.0.0.1:8000` and removes the `/api` prefix. The interface checks `/health` and `/providers`, submits cases to `/run`, and loads the recorded events from `/run/:traceId/events`. The production UI bundle can be built with `npm run ui:build`; serve the generated `ui/dist` through a static host configured with the same API proxy. It is not served by the Fastify process.
+Open `http://localhost:3001`. Vite proxies `/api/*` to the backend at `http://127.0.0.1:8000` and removes the `/api` prefix. The farmer screen is `ui/src/App.tsx`. It loads counties from `GET /counties`, posts the form to `POST /run`, and loads that run's events from `GET /trace/:id`. `GET /run/:traceId/events` is still the live server-sent stream. The production UI bundle can be built with `npm run ui:build`; serve the generated `ui/dist` through a static host configured with the same API proxy. It is not served by the Fastify process.
 
 The **Check Zetaris tables** action runs read-only row counts against all five configured `maize` views. The Meterless card accepts its `/connect#k=...` link and stores the token only in the local `.env`; the field clears after submission. A passing connection check proves the current runtime can reach that service. Each case result also labels its live/sample source and includes the actual service/model trace.
 

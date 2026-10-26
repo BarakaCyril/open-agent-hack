@@ -5,33 +5,12 @@ import {
   Cpu, 
   Smartphone, 
   Activity, 
-  Layers, 
-  TrendingUp, 
   AlertTriangle, 
-  CheckCircle2, 
-  Clock, 
-  ArrowRight, 
   RefreshCw, 
-  DollarSign,
-  CloudRain,
-  ExternalLink,
   ChevronRight,
-  Server,
+  ChevronDown,
   X,
-  Radio,
-  Sliders
 } from 'lucide-react';
-import { 
-  AreaChart, 
-  Area, 
-  BarChart, 
-  Bar, 
-  XAxis, 
-  YAxis, 
-  Tooltip, 
-  ResponsiveContainer, 
-  ReferenceLine 
-} from 'recharts';
 import { 
   api, 
   ZetarisCheckResponse, 
@@ -41,14 +20,97 @@ import {
   TraceEvent,
   formatTraceLine
 } from './api';
+import { IntegerControl, groupDigits } from './controls';
+
+const FORM_KEY = "open-agent-maize-form";
+const DEMO_FARMER_ID = "farmer-kirinyaga-003";
+type StorageKind = "open_bags" | "crib" | "hermetic" | "dry_store";
+
+type SavedForm = {
+  county?: string;
+  bags?: number;
+  storage?: StorageKind;
+  hasOffer?: boolean;
+  offer?: number;
+  cashNeed?: number;
+  recheck?: boolean;
+};
+
+function readSaved(): SavedForm {
+  try {
+    const raw = localStorage.getItem(FORM_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as SavedForm;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeSaved(value: SavedForm): void {
+  try {
+    localStorage.setItem(FORM_KEY, JSON.stringify(value));
+  } catch {
+    // Private mode or a full disk leaves the form usable for this visit.
+  }
+}
+
+const STORAGE_HELP: Record<StorageKind, { en: string; sw: string }> = {
+  open_bags: {
+    en: "Bags left open to air and damp.",
+    sw: "Magunia yaliyo wazi kwa hewa na unyevu.",
+  },
+  crib: {
+    en: "A ventilated wooden store.",
+    sw: "Ghala la mbao lenye upepo.",
+  },
+  hermetic: {
+    en: "A sealed bag that keeps air out.",
+    sw: "Gunia lililofungwa ili hewa isingie.",
+  },
+  dry_store: {
+    en: "A dry room or store.",
+    sw: "Chumba au ghala kavu.",
+  },
+};
+
+function sourceWords(source: RunCaseResponse["data_source"], lang: "en" | "sw"): string {
+  if (source === "zetaris") return lang === "sw" ? "Zetaris" : "Zetaris";
+  if (source === "mixed") return lang === "sw" ? "Mchanganyiko: baadhi ya jedwali ni sampuli" : "Mixed: some tables came from the sample files";
+  return lang === "sw" ? "Sampuli: si hoja ya moja kwa moja ya Zetaris" : "Sample: read from the sample files, not a live Zetaris query";
+}
+
+function verdictWords(response: RunCaseResponse, lang: "en" | "sw"): string {
+  if (response.verdict === "sell") return lang === "sw" ? "Uza" : "Sell";
+  if (response.verdict === "hold") {
+    const days = response.hold_days;
+    if (days === null) return lang === "sw" ? "Hifadhi" : "Hold";
+    return lang === "sw" ? `Hifadhi siku ${days}` : `Hold for ${days} days`;
+  }
+  if (response.verdict === "split") return lang === "sw" ? "Gawanya" : "Split";
+  return lang === "sw" ? "Hakuna pendekezo" : "No recommendation";
+}
 
 export default function App() {
+  const saved = readSaved();
+  const savedStorage = saved.storage;
+  const initialStorage: StorageKind = savedStorage === "open_bags" || savedStorage === "crib" || savedStorage === "hermetic" || savedStorage === "dry_store"
+    ? savedStorage
+    : "open_bags";
   const [lang, setLang] = useState<'en' | 'sw'>('en');
-  const [bags, setBags] = useState<number>(20);
-  const [offer, setOffer] = useState<number>(3400);
-  const [cashNeed, setCashNeed] = useState<number>(20000);
-  const [storage, setStorage] = useState<'open_bags' | 'crib' | 'hermetic'>('open_bags');
-  const [county, setCounty] = useState<string>('Kirinyaga');
+  const [bags, setBags] = useState<number>(typeof saved.bags === "number" && saved.bags > 0 ? saved.bags : 20);
+  const [hasOffer, setHasOffer] = useState<boolean>(saved.hasOffer === true);
+  const [offer, setOffer] = useState<number>(typeof saved.offer === "number" && saved.offer > 0 ? saved.offer : 1);
+  const [cashNeed, setCashNeed] = useState<number>(typeof saved.cashNeed === "number" && saved.cashNeed >= 0 ? saved.cashNeed : 0);
+  const [storage, setStorage] = useState<StorageKind>(initialStorage);
+  const [county, setCounty] = useState<string>(saved.county || "Kirinyaga");
+  const [counties, setCounties] = useState<Array<{ county: string; coverage: "supported" | "limited"; dry_maize_quotes_14d: number }>>([]);
+  const [countyError, setCountyError] = useState<string | null>(null);
+  const [recheck, setRecheck] = useState<boolean>(saved.recheck === true);
+  const [traceOpen, setTraceOpen] = useState<boolean>(false);
+  const [bagsOk, setBagsOk] = useState(true);
+  const [offerOk, setOfferOk] = useState(true);
+  const [cashOk, setCashOk] = useState(true);
   const [deliberating, setDeliberating] = useState<boolean>(false);
   const [phoneTime, setPhoneTime] = useState<string>('12:45');
   const [activeAgentTab, setActiveAgentTab] = useState<'timeline' | 'sql' | 'charts'>('timeline');
@@ -65,6 +127,7 @@ export default function App() {
   const [liveEvents, setLiveEvents] = useState<TraceEvent[]>([]);
   const [liveTraceId, setLiveTraceId] = useState<string | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
+  const [traceNote, setTraceNote] = useState<string | null>(null);
   const logRef = useRef<HTMLDivElement | null>(null);
 
   // Modals / Drawers
@@ -74,6 +137,28 @@ export default function App() {
   const [connectStatusMsg, setConnectStatusMsg] = useState<string | null>(null);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    writeSaved({ county, bags, storage, hasOffer, offer, cashNeed, recheck });
+  }, [county, bags, storage, hasOffer, offer, cashNeed, recheck]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.counties()
+      .then((body) => {
+        if (cancelled) return;
+        const rows = body.counties.filter((row) => row.county.trim().length > 0);
+        setCounties(rows);
+        setCountyError(rows.length ? null : "No counties were returned.");
+        setCounty((current) => rows.some((row) => row.county === current) ? current : (rows[0]?.county ?? current));
+      })
+      .catch(() => {
+        if (!cancelled) setCountyError("Could not load counties. Check that the API is running, then retry.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // 1. Phone Clock
   useEffect(() => {
@@ -241,58 +326,48 @@ export default function App() {
     en: {
       profile: "Farmer Profile",
       market: "County & Market",
-      bagsLabel: "White Maize Quantity",
-      storageLabel: "Storage Facility",
-      offerLabel: "Buyer Cash Offer (Per Bag)",
-      cashNeedLabel: "Immediate Cash Obligation",
+      bagsLabel: "White maize quantity",
+      storageLabel: "Storage",
+      offerToggle: "I have an offer",
+      offerLabel: "Buyer offer per 90 kg bag",
+      cashNeedLabel: "Cash need",
       runBtn: "Run Multi-Agent Deliberation",
-      verdictTag: "Official Recommendation",
-      estRevenue: "Estimated Cash Realized",
-      sellAction: "SELL NOW",
-      holdAction: "HOLD GRAIN",
-      recheckLabel: "Next Automated Recheck Schedule:",
-      rainWarn: "Notice: 193 mm rain expected over 7 days. Open storage risks 4.1 bags rotting.",
-      lossHigh: "Loss Risk: 20.4%",
-      lossMed: "Loss Risk: 8.2%",
-      lossLow: "Loss Risk: 0.5%",
-      deliberatingStatus: "Running Multi-Agent Deliberation..."
+      verdictTag: "Outcome",
+      recheckToggle: "Re-check my earlier advice",
+      deliberatingStatus: "Running Multi-Agent Deliberation...",
+      advice: "Decision support, not financial advice.",
     },
     sw: {
       profile: "Wasifu wa Mkulima",
-      market: "Kaunti na Soko",
-      bagsLabel: "Kiasi cha Mahindi Meupe",
-      storageLabel: "Aina ya Ghala",
-      offerLabel: "Ofa ya Mnunuzi (Kwa Gunia)",
-      cashNeedLabel: "Uhitaji wa Haraka wa Pesa",
-      runBtn: "Fanya Tathmini ya Wakala",
-      verdictTag: "Uamuzi Rasmi wa Ushauri",
-      estRevenue: "Pesa Zitakazopatikana",
-      sellAction: "UZA SASA",
-      holdAction: "HIFADHI MAHINDI",
-      recheckLabel: "Tarehe ya Uhakiki Ujao:",
-      rainWarn: "Tahadhari: Mvua ya 193 mm inatarajiwa ndani ya siku 7. Magunia 4.1 yanaweza kuoza.",
-      lossHigh: "Hatari ya Kuoza: 20.4%",
-      lossMed: "Hatari ya Kuoza: 8.2%",
-      lossLow: "Hatari ya Kuoza: 0.5%",
-      deliberatingStatus: "Wakala Wanashauriana Sasa..."
+      market: "Kaunti",
+      bagsLabel: "Kiasi cha mahindi meupe",
+      storageLabel: "Ghala",
+      offerToggle: "Nina ofa",
+      offerLabel: "Ofa ya mnunuzi kwa gunia la kilo 90",
+      cashNeedLabel: "Pesa ninazohitaji",
+      runBtn: "Fanya tathmini ya mawakala",
+      verdictTag: "Matokeo",
+      recheckToggle: "Kagua ushauri wa awali",
+      deliberatingStatus: "Mawakala wanashauriana...",
+      advice: "Msaada wa uamuzi, si ushauri wa kifedha.",
     }
   }[lang];
 
-  // Mathematical fallback calculations
-  const lossRate = storage === 'open_bags' ? 0.204 : storage === 'crib' ? 0.082 : 0.005;
-  const p50 = 3225;
-  const immediateRevenue = bags * offer;
-  const expectedHoldGross = bags * (1 - lossRate) * (p50 + 150);
-  const penaltyRate = 2.0;
-  const liquidityPenalty = cashNeed > 0 ? (cashNeed * penaltyRate) : 0;
-  const scoredHold = expectedHoldGross - liquidityPenalty;
-  const computedIsSell = immediateRevenue >= scoredHold;
-
-  // Active verdict logic (prefers live API response if present)
-  const isSell = liveResponse ? liveResponse.verdict === 'sell' : computedIsSell;
-  const finalRevenue = liveResponse && liveResponse.decision_values_kes 
-    ? (isSell ? liveResponse.decision_values_kes.sell : liveResponse.decision_values_kes.hold)
-    : (isSell ? immediateRevenue : expectedHoldGross);
+  const priceBand = liveResponse?.price_range_per_90kg_bag ?? null;
+  const benchmark = priceBand?.p50 ?? null;
+  const offerSlider = benchmark && benchmark > 0
+    ? { min: Math.max(0, Math.floor(benchmark * 0.5)), max: Math.max(1, Math.ceil(benchmark * 1.5)) }
+    : { min: 0, max: 10000 };
+  const bagsNote = bags > 100 && bags <= 500
+    ? (lang === "sw"
+      ? "Kitelezi kinaishia kwenye magunia 100. Nambari hii kubwa bado inatumwa."
+      : "The slider stops at 100 bags. This larger number is still sent.")
+    : null;
+  const cashNote = cashNeed > 50000
+    ? (lang === "sw"
+      ? "Kitelezi kinaishia kwenye 50,000. Nambari hii kubwa bado inatumwa."
+      : "The slider stops at 50,000. This larger number is still sent.")
+    : null;
 
   useEffect(() => {
     const node = logRef.current;
@@ -303,37 +378,44 @@ export default function App() {
   const handleRunDeliberation = async () => {
     setDeliberating(true);
     setApiError(null);
+    setTraceNote(null);
     setLiveEvents([]);
     setLiveResponse(null);
     setActiveAgentTab('timeline');
 
+    if (!county || bags < 1 || bags > 500 || (hasOffer && offer < 1)) {
+      setApiError(lang === "sw" ? "Kagua nambari kwenye fomu kabla ya kutuma." : "Check the numbers on the form before sending.");
+      setDeliberating(false);
+      return;
+    }
+
     const payload = {
-      farmer_id: 'FK-001',
+      farmer_id: DEMO_FARMER_ID,
       county,
       bags,
       storage,
-      offer_per_bag: offer,
       cash_need: cashNeed,
-      mode: 'advise' as const,
+      mode: recheck ? "recheck" as const : "advise" as const,
+      ...(hasOffer ? { offer_per_bag: offer } : {}),
     };
 
-    let closeStream = () => {};
     try {
-      const started = await api.startRun(payload);
-      setLiveTraceId(started.trace_id);
-      const streamDone = new Promise<void>((resolve) => {
-        closeStream = api.subscribeTraceEvents(started.trace_id, (event) => {
-          setLiveEvents((prev) => [...prev, event]);
-        }, resolve);
-      });
-      const res = await api.runResult(started.trace_id);
+      const res = await api.runCase(payload);
       setLiveResponse(res);
-      await Promise.race([streamDone, new Promise((resolve) => setTimeout(resolve, 1500))]);
+      setLiveTraceId(res.trace_id);
+      setTraceOpen(true);
+      try {
+        const recorded = await api.trace(res.trace_id);
+        setLiveEvents(recorded.events);
+      } catch (traceError: unknown) {
+        setLiveEvents([]);
+        const traceMessage = traceError instanceof Error ? traceError.message : "trace unavailable";
+        setTraceNote(traceMessage);
+      }
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Backend connection failed. Start with npm start on port 8000.';
+      const message = err instanceof Error ? err.message : "Backend connection failed. Start with npm start on port 8000.";
       setApiError(message);
     } finally {
-      closeStream();
       setDeliberating(false);
     }
   };
@@ -363,27 +445,6 @@ export default function App() {
       setConnectStatusMsg(`Connection failed: ${e?.message}`);
     }
   };
-
-  // Monte Carlo & Forecast data
-  const monteCarloData = [
-    { value: 10000, hold: 4, sell: 0 },
-    { value: 20000, hold: 18, sell: 0 },
-    { value: 35000, hold: 55, sell: 0 },
-    { value: 51200, hold: 92, sell: isSell ? 100 : 0 },
-    { value: 68000, hold: 42, sell: 0 },
-    { value: 85000, hold: 12, sell: 0 },
-    { value: 100000, hold: 2, sell: 0 }
-  ];
-
-  const weatherForecast = [
-    { day: "Oct 25", rain: 14, label: "Day 1" },
-    { day: "Oct 26", rain: 28, label: "Day 2" },
-    { day: "Oct 27", rain: 42, label: "Day 3" },
-    { day: "Oct 28", rain: 55, label: "Day 4" },
-    { day: "Oct 29", rain: 31, label: "Day 5" },
-    { day: "Oct 30", rain: 15, label: "Day 6" },
-    { day: "Oct 31", rain: 8, label: "Day 7" }
-  ];
 
   // Zetaris tables summary
   const zetarisRowCount = zetarisData?.tables?.reduce((acc, t) => acc + (t.row_count || 0), 0) || 0;
@@ -439,7 +500,7 @@ export default function App() {
               <span className={`h-2 w-2 rounded-full ${isZetarisOnline ? 'bg-emerald-600' : 'bg-amber-500'}`}></span>
               <span className="text-slate-500 font-body">Zetaris Engine:</span>
               <span className="font-semibold text-slate-900 font-mono">
-                {isZetarisOnline ? `Connected (${zetarisRowCount || 51} Rows)` : 'Offline (Port 3000)'}
+                {isZetarisOnline ? `Connected (${zetarisRowCount} rows)` : 'Offline'}
               </span>
               <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
             </button>
@@ -452,11 +513,11 @@ export default function App() {
               <span className={`h-2 w-2 rounded-full ${meterlessHealth?.status === 'online' ? 'bg-emerald-600' : 'bg-amber-500'}`}></span>
               <span className="text-slate-500 font-body">Reasoning:</span>
               <span className="font-semibold text-slate-900 font-mono">
-                {meterlessHealth?.status === 'online' 
-                  ? `Meterless (${meterlessHealth.model || 'auto'})` 
-                  : providersData?.primary === 'nvidia' 
-                    ? 'NVIDIA Nemotron 30B' 
-                    : 'Meterless (Offline)'}
+                {meterlessHealth?.status === 'online'
+                  ? `Meterless (${meterlessHealth.model || 'auto'})`
+                  : providersData?.primary === 'nvidia'
+                    ? (providersData.providers.find((item) => item.id === 'nvidia')?.model || 'NVIDIA')
+                    : 'Meterless (offline)'}
               </span>
               <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
             </button>
@@ -538,190 +599,229 @@ export default function App() {
               {/* Phone Inner Screen Content */}
               <div className="flex-1 bg-slate-50 p-4 rounded-b-[38px] overflow-y-auto space-y-3.5 font-body">
                 
-                {/* Farmer Profile Pill */}
-                <div className="p-3 rounded-2xl bg-white border border-slate-200 shadow-sm flex items-center justify-between">
-                  <div>
-                    <div className="text-[10px] uppercase font-bold tracking-wider text-slate-400 font-body">
-                      {t.profile}
-                    </div>
-                    <div className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
-                      <span>J. Kariuki</span>
-                      <span className="text-[9px] px-1.5 py-0.2 bg-emerald-50 text-emerald-700 font-semibold rounded border border-emerald-200">
-                        Verified
-                      </span>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <div className="text-[10px] text-slate-400 font-body">{t.market}</div>
-                    <div className="text-xs font-bold text-slate-800">Kirinyaga (Ngurubani)</div>
-                  </div>
+                <div className="p-3 rounded-2xl bg-white border border-slate-200 shadow-sm">
+                  <div className="text-[10px] uppercase font-bold tracking-wider text-slate-400">{t.profile}</div>
+                  <div className="text-sm font-semibold text-slate-900">Demo farmer (synthetic data)</div>
+                  <p className="mt-1 text-[11px] text-slate-500">Profile id {DEMO_FARMER_ID}. The ledger, news, and storage rules for this demo are synthetic.</p>
                 </div>
 
-                {/* FORM CONTROLS */}
                 <div className="space-y-3">
-                  
-                  {/* Quantity Slider */}
                   <div className="p-3 rounded-2xl bg-white border border-slate-200 shadow-sm space-y-1.5">
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="text-slate-600 font-medium">{t.bagsLabel}</span>
-                      <span className="font-mono font-bold text-emerald-800 text-sm">
-                        {bags} Bags (90kg)
-                      </span>
-                    </div>
-                    <input 
-                      type="range" min="5" max="100" step="5" value={bags} 
-                      onChange={(e) => setBags(Number(e.target.value))} 
-                      className="w-full accent-emerald-700 h-1.5 bg-slate-200 rounded-lg cursor-pointer"
-                    />
-                    <div className="flex justify-between text-[10px] text-slate-400 font-mono">
-                      <span>5 bags</span>
-                      <span>Total: {(bags * 90).toLocaleString()} kg</span>
-                      <span>100 bags</span>
-                    </div>
-                  </div>
-
-                  {/* Storage Method */}
-                  <div className="p-3 rounded-2xl bg-white border border-slate-200 shadow-sm space-y-1.5">
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="text-slate-600 font-medium">{t.storageLabel}</span>
-                      <span className="text-[11px] font-bold text-amber-700">
-                        {storage === 'open_bags' ? t.lossHigh : storage === 'crib' ? t.lossMed : t.lossLow}
-                      </span>
-                    </div>
-                    <select 
-                      value={storage} 
-                      onChange={(e) => setStorage(e.target.value as any)} 
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 font-medium focus:outline-none focus:ring-1 focus:ring-emerald-700"
+                    <label htmlFor="county" className="text-xs text-slate-700 font-medium">{t.market}</label>
+                    <select
+                      id="county"
+                      value={county}
+                      onChange={(event) => setCounty(event.target.value)}
+                      className="min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-900"
                     >
-                      <option value="open_bags">Traditional Open Bags (Exposed to Damp)</option>
-                      <option value="crib">Traditional Crib (Ventilated Wooden Frame)</option>
-                      <option value="hermetic">Airtight Hermetic Bag (PICS / Zero Spoilage)</option>
+                      {counties.length === 0 && <option value={county}>{county || "—"}</option>}
+                      {counties.map((row) => (
+                        <option key={row.county} value={row.county}>
+                          {row.county} ({row.coverage === "supported" ? "supported" : "limited"})
+                        </option>
+                      ))}
                     </select>
+                    {countyError && <p className="text-xs text-red-700">{countyError}</p>}
                   </div>
 
-                  {/* Cash Offer Slider */}
+                  <IntegerControl
+                    id="bags"
+                    label={t.bagsLabel}
+                    unit="bags"
+                    value={bags}
+                    onChange={setBags}
+                    sliderMin={5}
+                    sliderMax={100}
+                    sliderStep={1}
+                    hardMin={1}
+                    hardMax={500}
+                    softNote={bagsNote}
+                    trailing={`${groupDigits(bags * 90)} kg`}
+                    onValidity={setBagsOk}
+                  />
+
                   <div className="p-3 rounded-2xl bg-white border border-slate-200 shadow-sm space-y-1.5">
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="text-slate-600 font-medium">{t.offerLabel}</span>
-                      <span className="font-mono font-bold text-slate-900 text-sm">
-                        {offer.toLocaleString()} KES
-                      </span>
-                    </div>
-                    <input 
-                      type="range" min="2600" max="4200" step="50" value={offer} 
-                      onChange={(e) => setOffer(Number(e.target.value))} 
-                      className="w-full accent-emerald-700 h-1.5 bg-slate-200 rounded-lg cursor-pointer"
-                    />
-                    <div className="flex justify-between text-[10px] text-slate-400 font-mono">
-                      <span>2,600 KES</span>
-                      <span>Market Median: 3,225 KES</span>
-                      <span>4,200 KES</span>
-                    </div>
+                    <label htmlFor="storage" className="text-xs text-slate-700 font-medium">{t.storageLabel}</label>
+                    <select
+                      id="storage"
+                      value={storage}
+                      onChange={(event) => setStorage(event.target.value as StorageKind)}
+                      className="min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-900"
+                    >
+                      <option value="open_bags">Open bags</option>
+                      <option value="crib">Crib</option>
+                      <option value="hermetic">Hermetic bag</option>
+                      <option value="dry_store">Dry store</option>
+                    </select>
+                    <p className="text-xs text-slate-600">{STORAGE_HELP[storage][lang]}</p>
+                    <p className="text-xs text-slate-500">Loss risk: —</p>
                   </div>
 
-                  {/* Cash Need Slider */}
-                  <div className="p-3 rounded-2xl bg-white border border-slate-200 shadow-sm space-y-1.5">
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="text-slate-600 font-medium">{t.cashNeedLabel}</span>
-                      <span className="font-mono font-bold text-amber-700 text-sm">
-                        {cashNeed.toLocaleString()} KES
-                      </span>
-                    </div>
-                    <input 
-                      type="range" min="0" max="60000" step="5000" value={cashNeed} 
-                      onChange={(e) => setCashNeed(Number(e.target.value))} 
-                      className="w-full accent-amber-600 h-1.5 bg-slate-200 rounded-lg cursor-pointer"
-                    />
-                    <div className="flex justify-between text-[10px] text-slate-400 font-mono">
-                      <span>0 KES (No urgency)</span>
-                      <span>Urgent school fees/debt</span>
-                      <span>60,000 KES</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* RUN DELIBERATION MAGNETIC BUTTON */}
-                <button 
-                  onClick={handleRunDeliberation}
-                  disabled={deliberating}
-                  className="magnetic-btn w-full py-2.5 rounded-xl bg-emerald-800 hover:bg-emerald-900 text-white font-bold text-xs shadow-md shadow-emerald-900/10 flex items-center justify-center gap-2 transition disabled:opacity-75 cursor-pointer"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${deliberating ? 'animate-spin' : ''}`} />
-                  <span>{deliberating ? t.deliberatingStatus : t.runBtn}</span>
-                </button>
-
-                {/* DECISION VERDICT CARD */}
-                <div className="p-4 rounded-2xl bg-white border border-slate-200 shadow-md space-y-3">
-                  <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-                    <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400 font-mono">
-                      {t.verdictTag}
-                    </span>
-                    <div className="flex items-center gap-1.5">
-                      {liveResponse?.data_source && (
-                        <span className={`text-[9px] px-2 py-0.5 rounded font-mono font-semibold border ${
-                          liveResponse.data_source === 'zetaris' 
-                            ? 'bg-emerald-50 text-emerald-800 border-emerald-200' 
-                            : 'bg-amber-50 text-amber-800 border-amber-200'
-                        }`}>
-                          Source: {liveResponse.data_source.toUpperCase()}
-                        </span>
-                      )}
-                      <span className="text-[10px] font-semibold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-                        Confidence {liveResponse ? Math.round(liveResponse.confidence * 100) : 94}%
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="flex items-baseline justify-between">
-                    <div>
-                      <div className={`text-2xl font-extrabold tracking-tight ${isSell ? 'text-emerald-800' : 'text-indigo-800'}`}>
-                        {isSell ? t.sellAction : t.holdAction}
-                      </div>
-                      <div className="text-[11px] text-slate-500 font-body mt-0.5">
-                        {t.estRevenue}
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-xl font-bold font-mono text-slate-900">
-                        {Math.round(finalRevenue).toLocaleString()} KES
-                      </div>
-                      <div className="text-[10px] text-slate-400 font-mono">
-                        {isSell ? `(${bags} bags @ ${offer} KES)` : `Net of ${Math.round(lossRate * 100)}% risk`}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Dual Language Rationale */}
-                  <div className="p-3 rounded-xl bg-slate-50 text-[11px] text-slate-600 font-body leading-relaxed border border-slate-200/80">
-                    {liveResponse?.plain_reply ? (
-                      liveResponse.plain_reply
-                    ) : lang === 'sw' ? (
-                      isSell ? (
-                        `Kwa magunia ${bags} katika Kaunti ya Kirinyaga, uamuzi bora wa hesabu ni kuuza sasa kwa mapato ya ${immediateRevenue.toLocaleString()} KES. Kuhifadhi mahindi kunaleta hatari ya uharibifu wa ${lossRate * 100}% na hakukidhi hitaji lako la dharura la pesa la ${cashNeed.toLocaleString()} KES.`
-                      ) : (
-                        `Uamuzi bora ni kuhifadhi magunia ${bags} kwenye ghala salama. Unatarajiwa kupata takriban ${Math.round(expectedHoldGross).toLocaleString()} KES baada ya siku 7 kutokana na bei inayopanda.`
-                      )
-                    ) : (
-                      isSell ? (
-                        `For ${bags} bags in Kirinyaga, the higher computed value is sell at about ${immediateRevenue.toLocaleString()} KES. Holding grain in storage carries ${lossRate * 100}% spoilage risk and incurs an urgent cash penalty, yielding an inferior scored hold value of ${Math.round(scoredHold).toLocaleString()} KES.`
-                      ) : (
-                        `With airtight storage and low immediate cash urgency, holding your ${bags} bags yields a superior expected value of ${Math.round(expectedHoldGross).toLocaleString()} KES over a 7-day forecast.`
-                      )
+                  <div className="p-3 rounded-2xl bg-white border border-slate-200 shadow-sm space-y-2">
+                    <button
+                      type="button"
+                      aria-pressed={hasOffer}
+                      onClick={() => setHasOffer((current) => !current)}
+                      className="min-h-11 w-full rounded-xl border border-slate-300 bg-slate-50 px-3 text-left text-sm font-medium text-slate-900"
+                    >
+                      {t.offerToggle}: {hasOffer ? (lang === "sw" ? "ndiyo" : "on") : (lang === "sw" ? "hapana" : "off")}
+                    </button>
+                    {hasOffer && (
+                      <IntegerControl
+                        id="offer"
+                        label={t.offerLabel}
+                        unit="KES"
+                        value={offer}
+                        onChange={setOffer}
+                        sliderMin={offerSlider.min}
+                        sliderMax={offerSlider.max}
+                        sliderStep={1}
+                        hardMin={1}
+                        trailing={benchmark === null ? "Market median: —" : `Market median: ${groupDigits(Math.round(benchmark))} KES`}
+                        onValidity={setOfferOk}
+                      />
+                    )}
+                    {!hasOffer && (
+                      <p className="text-xs text-slate-500">Market median: {benchmark === null ? "—" : `${groupDigits(Math.round(benchmark))} KES`}</p>
                     )}
                   </div>
 
-                  {/* Weather Alert inside Phone */}
-                  <div className="flex items-start gap-2 p-2.5 rounded-xl bg-amber-50/80 border border-amber-200/80 text-[11px] text-amber-900">
-                    <CloudRain className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
-                    <div>{t.rainWarn}</div>
+                  <div className="space-y-2">
+                    <IntegerControl
+                      id="cash-need"
+                      label={t.cashNeedLabel}
+                      unit="KES"
+                      value={cashNeed}
+                      onChange={setCashNeed}
+                      sliderMin={0}
+                      sliderMax={50000}
+                      sliderStep={1}
+                      stepper={1000}
+                      hardMin={0}
+                      softNote={cashNote}
+                      onValidity={setCashOk}
+                    />
+                    <div className="grid grid-cols-4 gap-2">
+                      {[
+                        { label: lang === "sw" ? "Hakuna" : "None", amount: 0 },
+                        { label: "10,000", amount: 10000 },
+                        { label: "20,000", amount: 20000 },
+                        { label: "50,000", amount: 50000 },
+                      ].map((chip) => (
+                        <button
+                          key={chip.amount}
+                          type="button"
+                          onClick={() => setCashNeed(chip.amount)}
+                          className={`min-h-11 rounded-xl border text-xs font-semibold ${cashNeed === chip.amount ? "border-emerald-800 bg-emerald-800 text-white" : "border-slate-300 bg-white text-slate-800"}`}
+                        >
+                          {chip.label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
 
-                  <div className="pt-1 flex items-center justify-between text-[10px] text-slate-400 font-mono border-t border-slate-100">
-                    <span>{t.recheckLabel}</span>
-                    <span className="font-semibold text-slate-700">
-                      {liveResponse?.recheck_schedule || '2026-10-27 (3 Days)'}
-                    </span>
-                  </div>
+                  <button
+                    type="button"
+                    aria-pressed={recheck}
+                    onClick={() => setRecheck((current) => !current)}
+                    className={`min-h-11 w-full rounded-xl border px-3 text-left text-sm font-medium ${recheck ? "border-emerald-800 bg-emerald-50 text-emerald-950" : "border-slate-300 bg-white text-slate-900"}`}
+                  >
+                    {t.recheckToggle}: {recheck ? (lang === "sw" ? "ndiyo" : "on") : (lang === "sw" ? "hapana" : "off")}
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleRunDeliberation}
+                  disabled={deliberating || Boolean(countyError) || !bagsOk || !cashOk || (hasOffer && !offerOk)}
+                  className="min-h-11 w-full rounded-xl bg-emerald-800 text-white text-sm font-semibold disabled:opacity-70"
+                >
+                  {deliberating ? t.deliberatingStatus : t.runBtn}
+                </button>
+
+                <div className="p-4 rounded-2xl bg-white border border-slate-200 shadow-sm space-y-3">
+                  <p className="text-xs font-semibold text-slate-800">{t.advice}</p>
+                  {apiError && !liveResponse && (
+                    <div className="space-y-2">
+                      <p className="text-sm text-red-800">{apiError}</p>
+                      <button type="button" onClick={handleRunDeliberation} className="min-h-11 rounded-xl bg-slate-900 px-4 text-sm font-semibold text-white">
+                        {lang === "sw" ? "Jaribu tena" : "Retry"}
+                      </button>
+                    </div>
+                  )}
+                  {!apiError && !liveResponse && !deliberating && (
+                    <dl className="grid grid-cols-2 gap-2 text-xs text-slate-600">
+                      <div><dt>Verdict</dt><dd className="font-mono text-slate-900">—</dd></div>
+                      <div><dt>Confidence</dt><dd className="font-mono text-slate-900">—</dd></div>
+                      <div><dt>Market median</dt><dd className="font-mono text-slate-900">—</dd></div>
+                      <div><dt>Loss risk</dt><dd className="font-mono text-slate-900">—</dd></div>
+                    </dl>
+                  )}
+                  {deliberating && <p className="text-sm text-slate-600">{t.deliberatingStatus}</p>}
+                  {liveResponse && (
+                    <div className="space-y-3 text-xs text-slate-700">
+                      <div className="flex flex-wrap gap-2">
+                        <span className="rounded-full border border-slate-300 bg-slate-50 px-2 py-1 font-semibold">{sourceWords(liveResponse.data_source, lang)}</span>
+                        <span className="rounded-full border border-slate-300 px-2 py-1 font-mono">{liveResponse.data_source}</span>
+                      </div>
+                      <p className="text-xl font-semibold text-slate-950">{verdictWords(liveResponse, lang)}</p>
+                      {liveResponse.verdict === "no_recommendation" && (
+                        <div className="space-y-1 rounded-xl bg-amber-50 p-3 text-amber-950">
+                          <p>{liveResponse.reason || "—"}</p>
+                          <p>{liveResponse.question_for_farmer || "—"}</p>
+                        </div>
+                      )}
+                      <dl className="grid grid-cols-2 gap-2">
+                        <div><dt>Hold days</dt><dd className="font-mono">{liveResponse.hold_days === null ? "—" : liveResponse.hold_days}</dd></div>
+                        <div><dt>Confidence</dt><dd className="font-mono">{Math.round(liveResponse.confidence * 100)}%</dd></div>
+                        <div><dt>P10</dt><dd className="font-mono">{priceBand ? `${groupDigits(Math.round(priceBand.p10))} KES` : "—"}</dd></div>
+                        <div><dt>P50</dt><dd className="font-mono">{priceBand ? `${groupDigits(Math.round(priceBand.p50))} KES` : "—"}</dd></div>
+                        <div><dt>P90</dt><dd className="font-mono">{priceBand ? `${groupDigits(Math.round(priceBand.p90))} KES` : "—"}</dd></div>
+                        <div><dt>Market median</dt><dd className="font-mono">{benchmark === null ? "—" : `${groupDigits(Math.round(benchmark))} KES`}</dd></div>
+                        <div><dt>Loss risk</dt><dd className="font-mono">—</dd></div>
+                      </dl>
+                      <p className="text-sm leading-relaxed text-slate-800">{liveResponse.plain_reply}</p>
+                      <div>
+                        <h3 className="font-semibold text-slate-900">Evidence</h3>
+                        <ul className="mt-1 space-y-1">
+                          {liveResponse.evidence.length === 0 && <li>—</li>}
+                          {liveResponse.evidence.map((item, index) => (
+                            <li key={`${item.source}-${item.as_of}-${index}`} className="font-mono">{item.source} · {item.as_of} · {item.freshness}{item.synthetic ? " · synthetic" : ""}</li>
+                          ))}
+                        </ul>
+                      </div>
+                      <div>
+                        <h3 className="font-semibold text-slate-900">What would change this advice</h3>
+                        <ul className="mt-1 list-disc pl-4">
+                          {liveResponse.what_would_change_this_advice.length === 0 && <li>—</li>}
+                          {liveResponse.what_would_change_this_advice.map((line, index) => <li key={`${index}-${line}`}>{line}</li>)}
+                        </ul>
+                      </div>
+                      <div>
+                        <h3 className="font-semibold text-slate-900">Limitations</h3>
+                        <ul className="mt-1 list-disc pl-4">
+                          {liveResponse.limitations.map((line, index) => (
+                            <li key={`${index}-${line}`}>{line.startsWith("refresh_unavailable:") ? line.replace("refresh_unavailable:", "Refresh unavailable.") : line}</li>
+                          ))}
+                        </ul>
+                      </div>
+                      <p><span className="font-semibold">Recheck: </span>{liveResponse.recheck_schedule}</p>
+                      <p className="font-mono text-[11px] text-slate-500">{liveResponse.provider} · {liveResponse.model} · {liveResponse.trace_id}</p>
+                      {traceNote && <p className="text-amber-800">Trace: {traceNote}</p>}
+                      <button type="button" onClick={() => setTraceOpen((open) => !open)} className="min-h-11 flex w-full items-center justify-between rounded-xl border border-slate-300 px-3 text-left text-sm font-semibold text-slate-900">
+                        <span>{lang === "sw" ? "Jinsi mawakala walivyoamua" : "How the agents decided"}</span>
+                        <ChevronDown className={`h-4 w-4 ${traceOpen ? "rotate-180" : ""}`} />
+                      </button>
+                      {traceOpen && (
+                        <ol className="space-y-2">
+                          {liveEvents.length === 0 && <li className="text-slate-500">—</li>}
+                          {liveEvents.map((event, index) => (
+                            <li key={`${event.timestamp}-${index}`} className="font-mono text-[11px] leading-5">{formatTraceLine(event)}</li>
+                          ))}
+                        </ol>
+                      )}
+                    </div>
+                  )}
                 </div>
 
               </div>
@@ -740,13 +840,8 @@ export default function App() {
                     Multi-Agent Deliberation DAG & Risk Governance
                   </h2>
                 </div>
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-mono text-[11px]">
-                    2 Deliberation Rounds
-                  </span>
-                  <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-800 font-semibold border border-emerald-200 text-[11px]">
-                    1 Revision Resolved
-                  </span>
+                <div className="text-xs text-slate-500">
+                  {liveResponse ? `${liveResponse.verdict}` : "No run yet"}
                 </div>
               </div>
 
@@ -805,7 +900,7 @@ export default function App() {
                   onClick={() => setActiveAgentTab('charts')}
                   className={`px-3 py-1.5 rounded-lg transition ${activeAgentTab === 'charts' ? 'tab-active' : 'tab-inactive'}`}
                 >
-                  Monte Carlo & Weather
+                  Price range
                 </button>
                 <button
                   onClick={() => setActiveAgentTab('sql')}
@@ -828,11 +923,11 @@ export default function App() {
                     <span className="text-xs font-bold text-slate-800">Deliberation Event Log</span>
                     {liveEvents.length > 0 && (
                       <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-800 font-mono font-semibold border border-emerald-200">
-                        Live SSE Stream
+                        GET /trace
                       </span>
                     )}
                   </div>
-                  <span className="text-[11px] font-mono text-slate-500">Fastify /run/:traceId/events</span>
+                  <span className="text-[11px] font-mono text-slate-500">GET /trace/:id</span>
                 </div>
 
                 {apiError && (
@@ -861,59 +956,15 @@ export default function App() {
               </div>
             )}
 
-            {/* TAB CONTENT: MONTE CARLO & WEATHER CHARTS */}
             {activeAgentTab === 'charts' && (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                
-                {/* Monte Carlo Probability Curve */}
-                <div className="saas-card rounded-2xl p-4 flex flex-col">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs font-bold text-slate-800">Monte Carlo Valuation (KES)</span>
-                    <span className="text-[10px] text-emerald-800 font-mono font-semibold">1,000 Runs</span>
-                  </div>
-                  <div className="h-44 w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart data={monteCarloData}>
-                        <XAxis dataKey="value" tick={{ fontSize: 9 }} tickFormatter={(v) => `${v / 1000}k`} />
-                        <YAxis tick={{ fontSize: 9 }} />
-                        <Tooltip 
-                          formatter={(val: any) => [`${val} runs`, 'Simulations']}
-                          labelFormatter={(l: any) => `Valuation: ${Number(l).toLocaleString()} KES`}
-                        />
-                        <Area type="monotone" dataKey="hold" stroke="#15803D" fill="#DCFCE7" fillOpacity={0.7} />
-                        <ReferenceLine x={immediateRevenue} stroke="#B45309" strokeDasharray="3 3" label={{ value: 'Offer', fontSize: 9, fill: '#B45309' }} />
-                      </AreaChart>
-                    </ResponsiveContainer>
-                  </div>
-                  <div className="flex items-center justify-between text-[10px] text-slate-500 font-body mt-2 pt-2 border-t border-slate-100">
-                    <span>Median Expected: 51,200 KES</span>
-                    <span className="text-amber-800 font-semibold">Offer Line: {immediateRevenue.toLocaleString()} KES</span>
-                  </div>
-                </div>
-
-                {/* 7-Day Rainfall Forecast */}
-                <div className="saas-card rounded-2xl p-4 flex flex-col">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs font-bold text-slate-800">7-Day Rainfall Forecast (mm)</span>
-                    <span className="text-[10px] text-amber-700 font-mono font-semibold">Open-Meteo API</span>
-                  </div>
-                  <div className="h-44 w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={weatherForecast}>
-                        <XAxis dataKey="day" tick={{ fontSize: 9 }} />
-                        <YAxis tick={{ fontSize: 9 }} />
-                        <Tooltip formatter={(val: any) => [`${val} mm`, 'Rainfall']} />
-                        <Bar dataKey="rain" fill="#0284C7" radius={[4, 4, 0, 0]} />
-                        <ReferenceLine y={40} stroke="#EF4444" strokeDasharray="3 3" label={{ value: 'Danger', fontSize: 9, fill: '#EF4444' }} />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                  <div className="flex items-center justify-between text-[10px] text-slate-500 font-body mt-2 pt-2 border-t border-slate-100">
-                    <span>Cumulative Rain: 193 mm</span>
-                    <span className="text-red-700 font-semibold">Spoilage Danger: Day 3-5</span>
-                  </div>
-                </div>
-
+              <div className="saas-card rounded-2xl p-5 text-sm text-slate-700">
+                <h3 className="font-semibold text-slate-900">Price range per 90 kg bag</h3>
+                <p className="mt-2 font-mono">
+                  {priceBand
+                    ? `P10 ${groupDigits(Math.round(priceBand.p10))} · P50 ${groupDigits(Math.round(priceBand.p50))} · P90 ${groupDigits(Math.round(priceBand.p90))} KES`
+                    : "—"}
+                </p>
+                <p className="mt-2 text-xs text-slate-500">The response does not include a rainfall series or a simulation histogram.</p>
               </div>
             )}
 
@@ -923,47 +974,23 @@ export default function App() {
                 <div className="flex items-center justify-between pb-2 border-b border-slate-100">
                   <div className="flex items-center gap-2">
                     <Database className="w-4 h-4 text-emerald-700" />
-                    <span className="text-xs font-bold text-slate-800">Live Zetaris Federated Query</span>
+                    <span className="text-xs font-bold text-slate-800">Zetaris table check</span>
                   </div>
                   <span className={`text-[10px] font-mono px-2 py-0.5 rounded font-semibold border ${
                     isZetarisOnline 
                       ? 'bg-emerald-50 text-emerald-800 border-emerald-200' 
                       : 'bg-amber-50 text-amber-800 border-amber-200'
                   }`}>
-                    {isZetarisOnline ? 'PORT 3000 ONLINE' : 'OFFLINE (SAMPLE ACTIVE)'}
+                    {zetarisData?.status ?? "not checked"}
                   </span>
                 </div>
 
-                <div className="p-3.5 rounded-xl bg-slate-900 text-slate-100 font-mono text-xs overflow-x-auto leading-relaxed">
-                  <div className="text-slate-400">-- Federated cross-source query executed via Zetaris Spark Engine</div>
-                  <div className="text-emerald-400">SELECT</div>
-                  <div className="pl-4">
-                    p.market_date, p.county, p.market, p.price_kes,
-                    b.buyer_notes, b.liquidity_status
-                  </div>
-                  <div className="text-emerald-400">FROM</div>
-                  <div className="pl-4">
-                    maize.kamis_prices p
-                  </div>
-                  <div className="text-emerald-400">JOIN</div>
-                  <div className="pl-4">
-                    maize.market_news b ON p.county = b.county
-                  </div>
-                  <div className="text-emerald-400">WHERE</div>
-                  <div className="pl-4">
-                    p.county = <span className="text-amber-300">'{county}'</span>
-                    AND p.market_date &gt;= <span className="text-amber-300">'2026-10-12'</span>
-                  </div>
-                  <div className="text-emerald-400">ORDER BY</div>
-                  <div className="pl-4">p.market_date DESC LIMIT 10;</div>
-                </div>
-
-                <div className="flex items-center justify-between text-xs text-slate-500 pt-1 font-body">
-                  <span>Engine: Zetaris JDBC API (Port 3000)</span>
-                  <span className="font-mono text-emerald-800 font-semibold">
-                    {isZetarisOnline ? 'Execution Latency: 38ms' : 'Status: Sample Fallback'}
-                  </span>
-                </div>
+                <ul className="space-y-1 font-mono text-xs text-slate-700">
+                  {(zetarisData?.tables ?? []).length === 0 && <li>—</li>}
+                  {(zetarisData?.tables ?? []).map((table) => (
+                    <li key={table.table}>{table.table}: {table.status === "online" ? `${table.row_count ?? 0} rows` : table.status}</li>
+                  ))}
+                </ul>
               </div>
             )}
 
@@ -975,10 +1002,10 @@ export default function App() {
               </div>
               <div className="flex flex-wrap items-center gap-3 text-[11px] font-mono">
                 <span className={`px-2 py-0.5 rounded border ${isZetarisOnline ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-slate-100 text-slate-700 border-slate-200'}`}>
-                  Zetaris: {isZetarisOnline ? 'Live Spark SQL (51 Rows)' : 'Adapter Ready (Port 3000)'}
+                  Zetaris: {isZetarisOnline ? `${zetarisRowCount} rows` : (zetarisData?.status ?? "not checked")}
                 </span>
                 <span className={`px-2 py-0.5 rounded border ${meterlessHealth?.status === 'online' ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-slate-100 text-slate-700 border-slate-200'}`}>
-                  Reasoning: {meterlessHealth?.status === 'online' ? 'Meterless Runtime' : 'NVIDIA Nemotron 30B'}
+                  Reasoning: {meterlessHealth?.status === 'online' ? (meterlessHealth.model || 'Meterless') : (providersData?.primary ?? 'offline')}
                 </span>
                 <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
                   Cursor IDE Built

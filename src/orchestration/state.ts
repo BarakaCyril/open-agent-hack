@@ -50,19 +50,21 @@ export function describeEvidence(
   asOf: string,
   today: string,
   staleDays = 3,
-): { source: string; as_of: string; freshness: string } {
+  synthetic = false,
+): { source: string; as_of: string; freshness: string; synthetic: boolean } {
   const dated = /^\d{4}-\d{2}-\d{2}/u.test(asOf) ? asOf.slice(0, 10) : "";
   const fixture = origin.startsWith("fixture:") || route.startsWith("fixture:");
-  const synthetic = /synthetic/iu.test(origin) || /synthetic/iu.test(route);
+  const labelledSynthetic = synthetic || /synthetic/iu.test(origin) || /synthetic/iu.test(route);
   const realOrigin = origin === "kamis" || origin === "open-meteo" || origin === "market-news";
   let named = origin;
   if (fixture && !origin.startsWith("fixture:")) named = `fixture:${route}`;
-  else if (realOrigin && (synthetic || fixture)) named = synthetic ? "synthetic" : "fixture";
+  else if (realOrigin && (labelledSynthetic || fixture)) named = labelledSynthetic ? "synthetic" : "fixture";
   const source = named.startsWith("fixture:") ? named : `${named} via ${route}`;
   return {
     source,
     as_of: dated || "undated",
     freshness: dated ? freshnessLabel(dated, today, staleDays) : "undated",
+    synthetic: labelledSynthetic,
   };
 }
 

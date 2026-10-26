@@ -16,8 +16,17 @@ import { loadConfig, redact } from "./config.js";
 import { NotImplementedError } from "./errors.js";
 import { runCase } from "./orchestration/graph.js";
 import { RunRequestSchema, type RunResponse } from "./schemas.js";
-import { followTrace, hasTrace } from "./tracing.js";
-import { checkZetarisTables } from "./adapters/zetaris.js";
+
+function sendRunError(reply: { code: (status: number) => { send: (body: unknown) => unknown } }, error: unknown) {
+  const message = redact(error instanceof Error ? error.message : "request failed");
+  console.error(`request failed: ${message}`);
+  if (error instanceof NotImplementedError) return reply.code(501).send({ error: message });
+  if (error instanceof ZetarisUnavailableError) return reply.code(503).send({ error: message, code: error.code });
+  if (error instanceof ZetarisQueryError) return reply.code(502).send({ error: message, code: error.code });
+  return reply.code(500).send({ error: message });
+}
+import { followTrace, hasTrace, readTrace } from "./tracing.js";
+import { checkZetarisTables, listCounties, ZetarisQueryError, ZetarisUnavailableError } from "./adapters/zetaris.js";
 
 export function buildServer(): FastifyInstance {
   const app = Fastify({ logger: false });
@@ -32,6 +41,15 @@ export function buildServer(): FastifyInstance {
   });
 
   app.get("/health", async () => ({ status: "ok" }));
+
+  app.get("/counties", async () => listCounties());
+
+  app.get("/trace/:traceId", async (request, reply) => {
+    const traceId = (request.params as { traceId?: string }).traceId ?? "";
+    const events = readTrace(traceId, loadConfig().LOG_DIR);
+    if (!events) return reply.code(404).send({ error: "trace not found" });
+    return { trace_id: traceId, events };
+  });
 
   app.get("/providers", async () => {
     const selected = activeChatTarget();
@@ -170,7 +188,7 @@ export function buildServer(): FastifyInstance {
     try {
       return await job;
     } catch (error) {
-      return reply.code(500).send({ error: redact(error instanceof Error ? error.message : "run failed") });
+      return sendRunError(reply, error);
     }
   });
 
@@ -182,16 +200,19 @@ export function buildServer(): FastifyInstance {
         details: parsed.error.issues.map((issue) => `${issue.path.join(".") || "body"}: ${issue.message}`),
       });
     }
-    const response = await runCase(parsed.data);
+    const listed = await listCounties();
+    const known = listed.counties.find((entry) => entry.county.toLowerCase() === parsed.data.county.toLowerCase());
+    if (!known) {
+      return reply.code(400).send({
+        error: `Unknown county "${parsed.data.county}". Choose a county from GET /counties.`,
+        code: "unknown_county",
+      });
+    }
+    const response = await runCase({ ...parsed.data, county: known.county });
     return reply.send(response);
   });
 
-  app.setErrorHandler((error, _request, reply) => {
-    const message = redact(error instanceof Error ? error.message : "request failed");
-    console.error(`request failed: ${message}`);
-    if (error instanceof NotImplementedError) return reply.code(501).send({ error: message });
-    return reply.code(500).send({ error: message });
-  });
+  app.setErrorHandler((error, _request, reply) => sendRunError(reply, error));
 
   return app;
 }

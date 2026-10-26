@@ -31,6 +31,7 @@ export const EvidenceSchema = z.object({
   source: z.string().min(1),
   as_of: z.string().min(1),
   freshness: z.string().min(1),
+  synthetic: z.boolean().optional(),
 });
 
 export type Evidence = z.infer<typeof EvidenceSchema>;
