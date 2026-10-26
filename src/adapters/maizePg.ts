@@ -72,6 +72,31 @@ async function defaultClient(): Promise<PgClient> {
   return shared;
 }
 
+/**
+ * The price table must match the ON CONFLICT key. An older maize-db used source_row
+ * as its only primary key, which CREATE TABLE IF NOT EXISTS does not replace.
+ */
+export async function ensureKamisPriceTable(client: PgClient): Promise<void> {
+  await client.query(KAMIS_TABLE_SQL);
+  const columns = await client.query(
+    "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'kamis_prices'",
+  );
+  const names = new Set(columns.rows.map((row) => String(row.column_name)));
+  if (names.has("source_row")) {
+    await client.query("ALTER TABLE kamis_prices DROP CONSTRAINT IF EXISTS kamis_prices_pkey");
+    await client.query("ALTER TABLE kamis_prices DROP COLUMN source_row");
+  }
+  const primary = await client.query(
+    "SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conrelid = 'kamis_prices'::regclass AND contype = 'p'",
+  );
+  const definition = String(primary.rows[0]?.def ?? "");
+  if (!definition.includes("market_date")) {
+    await client.query(
+      "ALTER TABLE kamis_prices ADD PRIMARY KEY (market_date, county, market_name, commodity, variety, grade, unit_kg)",
+    );
+  }
+}
+
 /** Insert or replace live parsed rows. The caller must not pass hand-written prices. */
 export async function upsertKamisRows(rows: KamisRow[], client?: PgClient): Promise<number> {
   if (rows.length === 0) return 0;

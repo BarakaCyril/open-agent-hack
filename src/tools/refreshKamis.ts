@@ -64,6 +64,27 @@ function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+export const KAMIS_REQUEST_HEADERS = { "User-Agent": LIVE_USER_AGENT, Accept: "*/*" };
+
+/** robots.txt is fetched before any market page. HTTP 404 means the site published no rules. */
+export async function readKamisRobots(fetchImpl: FetchLike): Promise<{ status: "allow"; body: string } | { status: "deny"; detail: string }> {
+  try {
+    const response = await fetchImpl(`${KAMIS_EXPORT_ORIGIN}/robots.txt`, { headers: KAMIS_REQUEST_HEADERS });
+    const robots = await response.text();
+    const missingFile = response.status === 404;
+    if (!missingFile && !response.ok) {
+      return { status: "deny", detail: `robots.txt could not be read (HTTP ${response.status}).` };
+    }
+    if (!missingFile && !robotsAllows(robots, "/site/market")) {
+      return { status: "deny", detail: "robots.txt disallows /site/market." };
+    }
+    return { status: "allow", body: robots };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "request failed";
+    return { status: "deny", detail: `robots.txt could not be read. ${detail}` };
+  }
+}
+
 function traceRefresh(report: RefreshReport, retryCount: number): void {
   traceEvent({
     action: "refresh_kamis",
@@ -101,47 +122,15 @@ export async function refreshKamis(options: KamisRefreshOptions = {}): Promise<R
   const fetchImpl = options.fetch ?? fetch;
   const sleep = options.sleep ?? defaultSleep;
   const cacheDir = options.cacheDir ?? path.join(process.cwd(), "data", "cache", "kamis");
-  const headers = { "User-Agent": LIVE_USER_AGENT, Accept: "*/*" };
-  let robots = "";
-  try {
-    const response = await fetchImpl(`${KAMIS_EXPORT_ORIGIN}/robots.txt`, { headers });
-    robots = await response.text();
-    const missingFile = response.status === 404;
-    if (!missingFile && !response.ok) {
-      const report: RefreshReport = {
-        status: "error",
-        fetched: 0,
-        stored: 0,
-        rejected: 0,
-        detail: `robots.txt could not be read (HTTP ${response.status}).`,
-      };
-      traceRefresh(report, retryCount);
-      return report;
-    }
-    if (!missingFile && !robotsAllows(robots, "/site/market")) {
-      const report: RefreshReport = {
-        status: "error",
-        fetched: 0,
-        stored: 0,
-        rejected: 0,
-        detail: "robots.txt disallows /site/market.",
-      };
-      traceRefresh(report, retryCount);
-      return report;
-    }
-  } catch {
-    const report: RefreshReport = {
-      status: "error",
-      fetched: 0,
-      stored: 0,
-      rejected: 0,
-      detail: "robots.txt could not be read.",
-    };
+  const headers = KAMIS_REQUEST_HEADERS;
+  const robots = await readKamisRobots(fetchImpl);
+  if (robots.status === "deny") {
+    const report: RefreshReport = { status: "error", fetched: 0, stored: 0, rejected: 0, detail: robots.detail };
     traceRefresh(report, retryCount);
     return report;
   }
   fs.mkdirSync(cacheDir, { recursive: true });
-  fs.writeFileSync(path.join(cacheDir, "robots.txt"), robots);
+  fs.writeFileSync(path.join(cacheDir, "robots.txt"), robots.body);
   const rows: KamisRow[] = [];
   let rejected = 0;
   let failedPages = 0;

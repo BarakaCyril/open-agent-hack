@@ -16,6 +16,7 @@
     "ui:build": "npm --prefix ui run build",
     "trace": "tsx scripts/trace.ts",
     "refresh:kamis": "tsx scripts/refresh_kamis.ts",
+    "backfill:kamis": "tsx scripts/backfill_kamis.ts",
     "setup:zetaris": "tsx scripts/setup_zetaris.ts",
     "seed:zetaris": "tsx scripts/seed_zetaris.ts",
     "load:sample": "tsx scripts/load_sample_into_zetaris.ts"

@@ -1,6 +1,6 @@
 import zlib from "node:zlib";
 import { z } from "zod";
-import type { KamisRow } from "../adapters/sampleData.js";
+import { isWhiteMaizeBag, type KamisRow } from "../adapters/sampleData.js";
 import { normalizeCounty } from "./counties.js";
 
 const BAG_KG = 90;
@@ -114,8 +114,35 @@ function headerIndex(header: string[], name: string): number {
   return header.findIndex((cell) => cell.trim().toLowerCase() === name);
 }
 
-/** The export button downloads this workbook. Prices are shown per kg and stored per 90 kg bag. */
-export function parseKamisWorkbook(buffer: Buffer): { rows: KamisRow[]; rejected: number } {
+export interface KamisParseResult {
+  rows: KamisRow[];
+  rejected: number;
+  fetched: number;
+  reasons: Record<string, number>;
+}
+
+const ZOD_REASON: Record<string, string> = {
+  market_date: "bad_market_date",
+  county: "missing_county",
+  market_name: "missing_market",
+  commodity: "missing_commodity",
+  variety: "missing_variety",
+  grade: "missing_grade",
+  unit_kg: "bad_unit",
+  wholesale_price_kes: "blank_wholesale",
+  retail_price_kes: "blank_retail",
+  volume_bags: "bad_volume",
+};
+
+function addReason(reasons: Set<string>, reason: string): void {
+  reasons.add(reason);
+}
+
+/**
+ * The export button downloads this workbook. Prices are shown per kg and stored per 90 kg bag.
+ * `whiteMaizeOnly` is the backfill keep-rule. The live refresh leaves that filter to the price tools.
+ */
+export function parseKamisWorkbook(buffer: Buffer, options?: { whiteMaizeOnly?: boolean }): KamisParseResult {
   const files = unzipStore(buffer);
   const sheet = files.get("xl/worksheets/sheet1.xml");
   const stringsXml = files.get("xl/sharedStrings.xml");
@@ -137,7 +164,9 @@ export function parseKamisWorkbook(buffer: Buffer): { rows: KamisRow[]; rejected
     throw new Error("The export is missing a required column");
   }
   const rows: KamisRow[] = [];
+  const reasons: Record<string, number> = {};
   let rejected = 0;
+  const fetched = table.slice(1).length;
   for (const cells of table.slice(1)) {
     const cell = (index: number) => (index < 0 ? "" : cells[index] ?? "").trim();
     const county = normalizeCounty(cell(columns.county));
@@ -146,25 +175,47 @@ export function parseKamisWorkbook(buffer: Buffer): { rows: KamisRow[]; rejected
     const retail = perKg(cell(columns.retail));
     const supplyText = cell(columns.supply);
     const supply = supplyText ? Number(supplyText) : 0;
+    const commodity = cell(columns.commodity);
+    const variety = cell(columns.classification);
     const fake = county.toLowerCase() === "test" || market.toLowerCase() === "test market";
     const candidate = {
       market_date: cell(columns.date).slice(0, 10),
       county,
       market_name: market,
-      commodity: cell(columns.commodity),
-      variety: cell(columns.classification),
+      commodity,
+      variety,
       grade: cell(columns.grade) || "-",
       unit_kg: BAG_KG as 90,
       wholesale_price_kes: wholesale === null ? Number.NaN : round2(wholesale * BAG_KG),
       retail_price_kes: retail === null ? Number.NaN : round2(retail * BAG_KG),
       volume_bags: Number.isFinite(supply) && supply >= 0 ? Math.round(supply) : Number.NaN,
     };
+    const rowReasons = new Set<string>();
+    if (fake) addReason(rowReasons, "test_row");
+    if (options?.whiteMaizeOnly && !isWhiteMaizeBag({ commodity, variety, unit_kg: BAG_KG })) {
+      addReason(rowReasons, "not_white_maize");
+    }
+    if (wholesale === null) addReason(rowReasons, "blank_wholesale");
+    if (retail === null) addReason(rowReasons, "blank_retail");
+    if (!/^\d{4}-\d{2}-\d{2}$/u.test(candidate.market_date)) addReason(rowReasons, "bad_market_date");
+    if (!county) addReason(rowReasons, "missing_county");
+    if (!market) addReason(rowReasons, "missing_market");
+    if (!commodity) addReason(rowReasons, "missing_commodity");
+    if (!variety) addReason(rowReasons, "missing_variety");
+    if (supplyText && !(Number.isFinite(supply) && supply >= 0)) addReason(rowReasons, "bad_volume");
     const parsed = MappedRow.safeParse(candidate);
-    if (fake || !parsed.success) {
+    if (!parsed.success) {
+      for (const issue of parsed.error.issues) {
+        const key = String(issue.path[0] ?? "row");
+        addReason(rowReasons, ZOD_REASON[key] ?? key);
+      }
+    }
+    if (fake || !parsed.success || rowReasons.has("not_white_maize")) {
       rejected += 1;
+      for (const reason of rowReasons) reasons[reason] = (reasons[reason] ?? 0) + 1;
       continue;
     }
     rows.push(parsed.data);
   }
-  return { rows, rejected };
+  return { rows, rejected, fetched, reasons };
 }

@@ -198,7 +198,7 @@ Every external call has a timeout. The revision loop is capped. A run returns or
 
 ## Data and licensing
 
-See `data/README.md`. The KAMIS-style price file has 50 data rows and was already in the repo (export note: 14 October 2026), apart from one planted 9,999 KES quote that now lives only in `data/fixtures/dirty_market.json`. KAMIS terms of use for `https://kamis.kilimo.go.ke/site/market` are unconfirmed. Do not assume a redistribution licence. A live pull uses the market-page Excel export, throttled to one request every 2 seconds. Weather, storage-loss rules, news, and the farmer ledger in `data/sample/` are synthetic and marked as such. They are never labelled as KAMIS, Open-Meteo, or a gazette notice.
+See `data/README.md`. `data/sample/kamis_dry_maize.csv` is a 27-row labelled subset of the live KAMIS dry-maize export pulled on 26 October 2026. The full export is not committed. The planted 9,999 KES quote lives only in `data/fixtures/dirty_market.json`. KAMIS terms of use for `https://kamis.kilimo.go.ke/site/market` are unconfirmed. Do not assume a redistribution licence. A live pull uses the market-page Excel export, throttled to one request every 2 seconds. `npm run backfill:kamis` is the one-off history pull (`BACKFILL_MAX_PAGES`, default 40). Weather, storage-loss rules, news, and the farmer ledger in `data/sample/` are synthetic and marked as such. They are never labelled as KAMIS, Open-Meteo, or a gazette notice.
 
 Attribution:
 
@@ -233,7 +233,7 @@ No application code was committed before the window. The first commit is 2026-10
 
 Pre-existing before the build window:
 
-- The KAMIS dry-maize sample export in `data/sample/kamis_dry_maize.csv`, collected 14 October 2026. It was committed during the window in `6dd879e`.
+- `data/sample/kamis_dry_maize.csv` is a 27-row labelled subset of the KAMIS dry-maize export pulled on 26 October 2026. The full raw export is not in the tree. An earlier 50-row file was committed during the window in `6dd879e` and has been replaced.
 - Planning notes and the "Shamba Council" README draft: not present in this repository. [FILL IN: path or link if they were kept outside the repo.]
 - The mobile UI in `ui/` was first committed during the window, `c41e8ab` on 2026-10-24 18:51:33 +0300. Nothing in git shows a UI before the window.
 
@@ -257,7 +257,7 @@ Synthetic, and labelled synthetic in the files:
 
 ## Pre-existing components
 
-- `data/sample/kamis_dry_maize.csv`, described as a KAMIS sample exported on 14 October 2026. The planted 9,999 KES quote was moved to `data/fixtures/dirty_market.json` so the sample file is not presented as a real KAMIS outlier.
+- `data/sample/kamis_dry_maize.csv`, a labelled 27-row subset of the live KAMIS export pulled on 26 October 2026. The planted 9,999 KES quote was moved to `data/fixtures/dirty_market.json` so the sample file is not presented as a real KAMIS outlier.
 - `data/sample/records_sample.json`, `data/sample/metadata.csv`, and `data/download_data.py` were already here. The download script is still a stub. The empty records file is unused.
 - `memory/hmem/` is the H-MEM spec and reference. It is not modified. The project implementation is `src/hmem`.
 

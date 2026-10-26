@@ -1,0 +1,10 @@
+label: subset
+source: https://kamis.kilimo.go.ke/site/market?product=1&export=excel
+pulled: 2026-10-26
+product: Dry Maize (product=1)
+full_export_rows: 32929
+full_export_date_range: 2005-02-01 .. 2026-10-26
+maximum_per_page_accepted: 12000
+filter: white maize, 90 kg, non-blank wholesale and retail, test rows removed
+subset_rows: 27
+note: Small labelled subset for a clean clone. Not the full export. Raw workbooks stay in data/cache/ and are not committed. KAMIS terms of use are unconfirmed.

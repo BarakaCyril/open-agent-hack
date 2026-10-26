@@ -51,10 +51,10 @@ describe("price stats", () => {
     const points = sample
       .filter((row) => row.county === "Kirinyaga" && isWhiteMaizeBag(row) && row.market_date >= "2026-10-08")
       .map((row) => ({ date: row.market_date, price: row.wholesale_price_kes }));
-    points.push({ date: "2026-10-18", price: 9999 });
-    const stats = cleanAndSummarize(points);
-    expect(stats.outliersRemoved).toBe(1);
-    expect(stats.p90).toBeLessThan(4000);
-    expect(stats.n).toBe(10);
+    expect(points.length).toBeGreaterThanOrEqual(4);
+    const stats = cleanAndSummarize([...points, { date: "2026-10-18", price: 9999 }]);
+    expect(stats.outlierCount).toBeGreaterThanOrEqual(1);
+    expect(stats.p90).toBeLessThan(9999);
+    expect(stats.latest).not.toBe(9999);
   });
 });

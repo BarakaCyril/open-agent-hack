@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { loadConfig, redact, type AppConfig } from "../config.js";
 import type { DataSource } from "../schemas.js";
 import { currentContext, traceEvent } from "../tracing.js";
+import { coverageFromQuoteCount, COVERAGE_WINDOW_DAYS, zetarisCountyQuoteSql } from "../tools/coverage.js";
 import { loadCountyCatalog } from "../tools/counties.js";
 import {
   finiteNumber,
@@ -668,10 +669,6 @@ export interface CountyCoverage {
   dry_maize_quotes_14d: number;
 }
 
-function coverageRank(count: number): CountyCoverage["coverage"] {
-  return count >= 3 ? "supported" : "limited";
-}
-
 function lowerRow(raw: Record<string, unknown>): Record<string, unknown> {
   const row: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(raw)) row[key.toLowerCase()] = value;
@@ -683,13 +680,13 @@ function offlineCounties(today = new Date().toISOString().slice(0, 10)): CountyC
   for (const row of loadPriceRows()) {
     if (row.commodity.toLowerCase() !== "dry maize") continue;
     const age = (Date.parse(today) - Date.parse(row.market_date)) / 86_400_000;
-    if (!Number.isFinite(age) || age < 0 || age > 14) continue;
+    if (!Number.isFinite(age) || age < 0 || age > COVERAGE_WINDOW_DAYS) continue;
     const key = row.county.toLowerCase();
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   return loadCountyCatalog().map((entry) => {
     const n = counts.get(entry.county.toLowerCase()) ?? 0;
-    return { county: entry.county, coverage: coverageRank(n), dry_maize_quotes_14d: n };
+    return { county: entry.county, coverage: coverageFromQuoteCount(n), dry_maize_quotes_14d: n };
   });
 }
 
@@ -697,10 +694,7 @@ function offlineCounties(today = new Date().toISOString().slice(0, 10)): CountyC
 export async function listCounties(): Promise<{ source: "zetaris" | "sample"; counties: CountyCoverage[] }> {
   try {
     const names = await runSql("SELECT county FROM maize.counties", 100);
-    const counts = await runSql(
-      "SELECT county, COUNT(*) AS n FROM maize.kamis_prices WHERE lower(commodity) = 'dry maize' AND market_date >= date_sub(current_date(), 14) GROUP BY county",
-      100,
-    );
+    const counts = await runSql(zetarisCountyQuoteSql(), 100);
     const byCounty = new Map<string, number>();
     for (const raw of counts) {
       const row = lowerRow(raw);
@@ -712,7 +706,7 @@ export async function listCounties(): Promise<{ source: "zetaris" | "sample"; co
       const name = String(lowerRow(raw).county ?? "").trim();
       if (!name) return [];
       const n = byCounty.get(name.toLowerCase()) ?? 0;
-      return [{ county: name, coverage: coverageRank(n), dry_maize_quotes_14d: n }];
+      return [{ county: name, coverage: coverageFromQuoteCount(n), dry_maize_quotes_14d: n }];
     });
     return { source: "zetaris", counties };
   } catch (error) {
