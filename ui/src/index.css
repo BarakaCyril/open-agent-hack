@@ -314,6 +314,67 @@ button:disabled { cursor: not-allowed; opacity: .56; }
 .tab-active { background: #fff; color: #14532d; font-weight: 650; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08); }
 .tab-inactive { color: #64748b; }
 
+/* Refined application shell: quiet paper tones, clear hierarchy, and consistent surfaces. */
+#root > div.min-h-screen {
+  min-height: 100vh;
+  padding: 22px clamp(18px, 4vw, 64px) 42px;
+  color: #1d3024;
+  background: radial-gradient(ellipse at 82% 0%, rgba(221, 233, 217, .64), transparent 32%), #f5f6f1;
+}
+#bubble-canvas { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; opacity: .38; }
+#root > div.min-h-screen > div.relative.z-10 { width: 100%; max-width: 1320px; }
+#root > div.min-h-screen header {
+  min-height: 76px;
+  margin-bottom: 30px;
+  padding: 0 0 18px;
+  border-color: #dce3d9;
+}
+#root > div.min-h-screen header h1 { font: 600 22px/1.15 Georgia, "Times New Roman", serif; letter-spacing: -.45px; color: #203629; }
+#root > div.min-h-screen header p { margin-top: 5px; color: #68766b; font-size: 11px; letter-spacing: .01em; }
+#root > div.min-h-screen header > div:first-child > div:first-child {
+  width: 42px; height: 42px; border-radius: 50% 50% 50% 12px;
+  background: linear-gradient(145deg, #28583a, #173d29);
+  box-shadow: 0 4px 12px rgba(27, 62, 40, .16);
+}
+#root > div.min-h-screen header > div:first-child > div:first-child + div > div { gap: 10px; }
+#root > div.min-h-screen header > div:first-child span.rounded-full {
+  padding: 4px 9px; border-color: #dbe6d8; background: #edf4ea; color: #466348;
+  font-size: 9px; letter-spacing: .04em; text-transform: uppercase;
+}
+#root > div.min-h-screen header .cursor-help,
+#root > div.min-h-screen header button {
+  min-height: 34px; border-radius: 999px; border-color: #dce4da; padding: 7px 12px;
+  box-shadow: 0 1px 3px rgba(29, 48, 36, .035); font-size: 10px;
+}
+#root > div.min-h-screen header button:hover { border-color: #9db39b; background-color: #fbfcf8; }
+#root .phone-mockup {
+  border: 1px solid #cbd6cb; border-radius: 38px; padding: 8px;
+  box-shadow: 0 24px 60px rgba(33, 55, 39, .13), 0 3px 10px rgba(33, 55, 39, .06);
+}
+#root .phone-mockup > div:nth-child(2) { background: #f5f7f2; }
+#root .phone-mockup .rounded-2xl.bg-white {
+  border-color: #e4eae1; border-radius: 13px; box-shadow: 0 2px 6px rgba(32, 54, 38, .035);
+}
+#root .phone-mockup select { min-height: 36px; border-color: #dce4db; border-radius: 9px; background-color: #fbfcf9; }
+#root .phone-mockup input[type="range"] { accent-color: #39734b; }
+#root .phone-mockup button { transition: transform .18s ease, box-shadow .18s ease, background-color .18s ease; }
+#root .phone-mockup button:hover:not(:disabled) { box-shadow: 0 5px 14px rgba(26, 66, 39, .14); }
+#root .xl\:grid-cols-12 { gap: clamp(22px, 3vw, 42px); align-items: start; }
+#root .rounded-2xl.border.border-slate-200.bg-white.shadow-sm {
+  border-color: #e2e8df; border-radius: 14px; box-shadow: 0 3px 12px rgba(36, 54, 39, .045);
+}
+#root .saas-card { border-radius: 14px; box-shadow: 0 4px 16px rgba(34, 51, 38, .045); }
+#root .tab-active { color: #244f34; }
+#root :focus-visible { outline: 3px solid rgba(65, 125, 78, .36); outline-offset: 2px; }
+
+@media (max-width: 767px) {
+  #root > div.min-h-screen { padding: 16px 16px 30px; }
+  #root > div.min-h-screen header { margin-bottom: 22px; }
+  #root > div.min-h-screen header h1 { font-size: 19px; }
+  #root > div.min-h-screen header .cursor-help,
+  #root > div.min-h-screen header button { max-width: 100%; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
