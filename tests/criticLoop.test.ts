@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { judgeClaims } from "../src/agents/riskCritic.js";
 import { describeRecheck } from "../src/agents/watcher.js";
-import { nextLoopAction, runBoundedLoop, type LoopBag } from "../src/orchestration/graph.js";
+import { caveatForRepeatedClaim, nextLoopAction, runBoundedLoop, type LoopBag } from "../src/orchestration/graph.js";
 import type { Claim, CriticReason } from "../src/schemas.js";
 
 function claim(agent: string, payload: Record<string, unknown>, evidence: Claim["evidence"] = [
@@ -105,6 +105,61 @@ describe("critic loop caps", () => {
     });
     expect(ok.action).toBe("approve");
     expect(ok.reasons).toEqual([]);
+
+    const weeklyRain = judgeClaims({
+      today: "2026-10-22",
+      bags: 20,
+      storage: "open_bags",
+      market: cleanMarket,
+      storageClaim: claim("StorageWeatherAnalyst", {
+        ...cleanStorage.payload,
+        loss_mean: 0.032,
+        total_rain_mm: 22,
+        forecast_as_of: "2026-10-22",
+        daily_rain_mm: [3.7, 7.2, 4.6, 2.4, 1.2, 0.9, 1.8],
+        heavy_rain_mm_min: 20,
+      }),
+    });
+    expect(weeklyRain.action).toBe("approve");
+    expect(weeklyRain.reasons).not.toContain("contradiction");
+
+    const heavyDay = judgeClaims({
+      today: "2026-10-22",
+      bags: 20,
+      storage: "open_bags",
+      market: cleanMarket,
+      storageClaim: claim("StorageWeatherAnalyst", {
+        ...cleanStorage.payload,
+        loss_mean: 0.032,
+        total_rain_mm: 26,
+        forecast_as_of: "2026-10-22",
+        daily_rain_mm: [26],
+        heavy_rain_mm_min: 20,
+      }),
+    });
+    expect(heavyDay.action).toBe("reject");
+    expect(heavyDay.reasons).toContain("contradiction");
+    expect(heavyDay.notes.join(" ")).toContain("20");
+    expect(heavyDay.notes.join(" ")).toContain("StorageWeatherAnalyst can");
+
+    const repeated = caveatForRepeatedClaim({
+      action: "reject",
+      reasons: ["contradiction"],
+      previous: "same",
+      next: "same",
+      notes: ["StorageWeatherAnalyst can recompute the loss from those daily rows."],
+    });
+    expect(repeated.action).toBe("approve");
+    expect(repeated.caveat).toContain("Unresolvable");
+    const hard = caveatForRepeatedClaim({
+      action: "escalate",
+      reasons: ["coverage"],
+      previous: "same",
+      next: "same",
+      notes: ["Only 1 cleaned white-maize quotes support this county."],
+    });
+    expect(hard.action).toBe("escalate");
+    expect(hard.caveat).toBeNull();
 
     const mismatch = judgeClaims({
       today: "2026-10-22",

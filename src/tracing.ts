@@ -52,6 +52,8 @@ export interface RunContext {
   markSampleFallback: (detail: string) => void;
   markNarrativeFallback: (detail: string) => void;
   modelAnswer: { provider: "meterless" | "nvidia" | null; model: string | null };
+  /** Set once per run from SELECT 1. False means the whole run may use sample data. */
+  sourceReachable?: boolean;
 }
 
 interface LiveTrace {

@@ -8,6 +8,15 @@ const apiProxy = {
     timeout: 0,
     proxyTimeout: 0,
     rewrite: (path: string) => path.replace(/^\/api/, ""),
+    configure: (proxy: { on: (event: string, handler: (...args: never[]) => void) => void }) => {
+      proxy.on("proxyRes", ((proxyRes: { headers: Record<string, string | string[] | undefined> }, req: { url?: string }) => {
+        if (req.url?.includes("/events")) {
+          delete proxyRes.headers["content-length"];
+          proxyRes.headers["cache-control"] = "no-cache, no-transform";
+          proxyRes.headers["x-accel-buffering"] = "no";
+        }
+      }) as never);
+    },
   },
 };
 

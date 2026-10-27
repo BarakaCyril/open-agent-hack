@@ -5,7 +5,7 @@ import { isWhiteMaizeBag, type NewsItem } from "../adapters/sampleData.js";
 import type { CaseState } from "../schemas.js";
 import { DIRTY_FIXTURE_SOURCE, loadDirtyFixture } from "../tools/dirtyFixture.js";
 import { cleanAndSummarize, trendOf, type PriceStats, type PriceTrend } from "../tools/prices.js";
-import { daysBetween, describeEvidence, kes, roundTo } from "../orchestration/state.js";
+import { daysBetween, describeEvidence, kes, roundTo, setSyntheticInput } from "../orchestration/state.js";
 import { traceEvent } from "../tracing.js";
 
 const FRESH_DAYS = 14;
@@ -16,7 +16,7 @@ function disagrees(trend: PriceTrend, direction: string): boolean {
 
 function rememberSource(state: CaseState, key: "prices" | "news", via: "zetaris" | "sample", synthetic: boolean, label: string): void {
   state.sources[key] = via;
-  if (synthetic && !state.synthetic_inputs.includes(label)) state.synthetic_inputs.push(label);
+  setSyntheticInput(state, label, synthetic);
 }
 
 export async function analyzeMarket(state: CaseState): Promise<void> {

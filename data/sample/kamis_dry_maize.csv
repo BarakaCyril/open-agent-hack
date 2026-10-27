@@ -1,51 +1,28 @@
 market_date,county,market_name,commodity,variety,grade,unit_kg,wholesale_price_kes,retail_price_kes,volume_bags
-2026-10-18,Kirinyaga,Ngurubani Market,Dry Maize,White Maize,Grade 1,90,3450,3800,120
-2026-10-17,Kirinyaga,Ngurubani Market,Dry Maize,White Maize,Grade 1,90,3400,3750,140
-2026-10-16,Kirinyaga,Ngurubani Market,Dry Maize,White Maize,Grade 1,90,3350,3700,95
-2026-10-15,Kirinyaga,Ngurubani Market,Dry Maize,White Maize,Grade 1,90,3300,3650,110
-2026-10-14,Kirinyaga,Ngurubani Market,Dry Maize,White Maize,Grade 1,90,3250,3600,105
-2026-10-13,Kirinyaga,Ngurubani Market,Dry Maize,White Maize,Grade 1,90,3200,3550,130
-2026-10-12,Kirinyaga,Ngurubani Market,Dry Maize,White Maize,Grade 1,90,3180,3500,115
-2026-10-11,Kirinyaga,Ngurubani Market,Dry Maize,White Maize,Grade 1,90,3150,3500,90
-2026-10-10,Kirinyaga,Ngurubani Market,Dry Maize,White Maize,Grade 1,90,3120,3450,100
-2026-10-09,Kirinyaga,Ngurubani Market,Dry Maize,White Maize,Grade 1,90,3100,3450,85
-2026-10-18,Nakuru,Wakahiu Market,Dry Maize,White Maize,Grade 1,90,3200,3500,250
-2026-10-17,Nakuru,Wakahiu Market,Dry Maize,White Maize,Grade 1,90,3180,3480,210
-2026-10-16,Nakuru,Wakahiu Market,Dry Maize,White Maize,Grade 1,90,3150,3450,220
-2026-10-15,Nakuru,Wakahiu Market,Dry Maize,White Maize,Grade 1,90,3150,3450,200
-2026-10-14,Nakuru,Wakahiu Market,Dry Maize,White Maize,Grade 1,90,3100,3400,180
-2026-10-18,Uasin Gishu,Eldoret Market,Dry Maize,White Maize,Grade 1,90,3050,3350,400
-2026-10-17,Uasin Gishu,Eldoret Market,Dry Maize,White Maize,Grade 1,90,3000,3300,380
-2026-10-16,Uasin Gishu,Eldoret Market,Dry Maize,White Maize,Grade 1,90,2980,3280,350
-2026-10-18,Machakos,Machakos Market,Dry Maize,White Maize,Grade 1,90,3500,3850,80
-2026-10-17,Machakos,Machakos Market,Dry Maize,White Maize,Grade 1,90,3480,3820,75
-2026-10-16,Machakos,Machakos Market,Dry Maize,White Maize,Grade 1,90,3450,3800,85
-2026-10-18,Nairobi,Wakulima Market,Dry Maize,White Maize,Grade 1,90,3700,4100,600
-2026-10-17,Nairobi,Wakulima Market,Dry Maize,White Maize,Grade 1,90,3680,4050,550
-2026-09-15,Kirinyaga,Ngurubani Market,Dry Maize,White Maize,Grade 1,90,2800,3100,50
-2026-10-18,Garissa,Garissa Market,Dry Maize,White Maize,Grade 1,90,3900,4300,15
-2026-10-18,Kirinyaga,Ngurubani Market,Beans,Yellow Beans,Grade 1,90,9600,10500,60
-2026-10-17,Kirinyaga,Ngurubani Market,Beans,Yellow Beans,Grade 1,90,9500,10400,55
-2026-10-16,Kirinyaga,Ngurubani Market,Beans,Yellow Beans,Grade 1,90,9400,10300,70
-2026-10-18,Nakuru,Wakahiu Market,Beans,Rosecoco,Grade 1,90,9200,10100,110
-2026-10-17,Nakuru,Wakahiu Market,Beans,Rosecoco,Grade 1,90,9150,10000,95
-2026-10-16,Nakuru,Wakahiu Market,Beans,Rosecoco,Grade 1,90,9100,9950,100
-2026-10-18,Machakos,Machakos Market,Beans,Yellow Beans,Grade 1,90,9800,10800,45
-2026-10-17,Machakos,Machakos Market,Beans,Yellow Beans,Grade 1,90,9750,10700,50
-2026-10-18,Nairobi,Wakulima Market,Beans,Yellow Beans,Grade 1,90,10200,11200,200
-2026-10-18,Nyandarua,Ol Kalou Market,Irish Potatoes,Shangi,Grade 1,50,2600,3000,300
-2026-10-17,Nyandarua,Ol Kalou Market,Irish Potatoes,Shangi,Grade 1,50,2550,2950,280
-2026-10-16,Nyandarua,Ol Kalou Market,Irish Potatoes,Shangi,Grade 1,50,2500,2900,310
-2026-10-18,Nakuru,Wakahiu Market,Irish Potatoes,Shangi,Grade 1,50,2800,3200,240
-2026-10-17,Nakuru,Wakahiu Market,Irish Potatoes,Shangi,Grade 1,50,2750,3150,220
-2026-10-16,Nakuru,Wakahiu Market,Irish Potatoes,Shangi,Grade 1,50,2700,3100,250
-2026-10-18,Nairobi,Wakulima Market,Irish Potatoes,Shangi,Grade 1,50,3200,3700,450
-2026-10-18,Kirinyaga,Ngurubani Market,Rice,Pishori,Grade 1,50,6800,7500,180
-2026-10-17,Kirinyaga,Ngurubani Market,Rice,Pishori,Grade 1,50,6750,7450,190
-2026-10-16,Kirinyaga,Ngurubani Market,Rice,Pishori,Grade 1,50,6700,7400,160
-2026-10-18,Nairobi,Wakulima Market,Rice,Pishori,Grade 1,50,7400,8200,350
-2026-10-18,Machakos,Machakos Market,Sorghum,Red Sorghum,Grade 1,90,3800,4200,80
-2026-10-17,Machakos,Machakos Market,Sorghum,Red Sorghum,Grade 1,90,3750,4150,75
-2026-10-16,Machakos,Machakos Market,Sorghum,Red Sorghum,Grade 1,90,3700,4100,90
-2026-10-18,Nakuru,Wakahiu Market,Sorghum,Red Sorghum,Grade 1,90,3600,4000,120
-2026-10-17,Nakuru,Wakahiu Market,Sorghum,Red Sorghum,Grade 1,90,3550,3950,110
+2023-08-31,Garissa,Garissa Soko Mugdi,Dry Maize,White Maize,-,90,7200,8100,10000
+2023-08-14,Garissa,Garissa Soko Mugdi,Dry Maize,White Maize,-,90,7200,9000,10000
+2023-08-10,Garissa,Garissa Soko Mugdi,Dry Maize,White Maize,-,90,7200,9000,10000
+2026-10-26,Kirinyaga,Ngurubani Market,Dry Maize,White Maize,-,90,4200.3,4500,6800
+2026-10-23,Kirinyaga,Ngurubani Market,Dry Maize,White Maize,-,90,4200.3,4500,4520
+2026-10-19,Kirinyaga,Ngurubani Market,Dry Maize,White Maize,-,90,4200.3,4500,4520
+2026-10-16,Kirinyaga,Makutano Kirinyaga,Dry Maize,White Maize,-,90,3420,3780,0
+2026-10-16,Kirinyaga,Ngurubani Market,Dry Maize,White Maize,-,90,4200.3,4500,5200
+2026-10-13,Kirinyaga,Kagio,Dry Maize,White Maize,-,90,3500.1,5850,0
+2026-10-13,Kirinyaga,Ngurubani Market,Dry Maize,White Maize,-,90,4200.3,4500,3520
+2026-10-09,Kirinyaga,Makutano Kirinyaga,Dry Maize,White Maize,-,90,3240,3780,0
+2026-10-09,Kirinyaga,Ngurubani Market,Dry Maize,White Maize,-,90,4200.3,4500,3580
+2022-12-16,Machakos,Machakos Main Market,Dry Maize,White Maize,-,90,6300,9000,10000
+2022-12-05,Machakos,Machakos Main Market,Dry Maize,White Maize,-,90,6300,9000,40000
+2022-10-24,Machakos,Masii Crops,Dry Maize,White Maize,-,90,5799.6,6300,9000
+2026-10-23,Nairobi,Kawangware,Dry Maize,White Maize,-,90,4599.9,5400,0
+2026-10-22,Nairobi,Kawangware,Dry Maize,White Maize,-,90,4599.9,5400,0
+2026-10-19,Nairobi,Kawangware,Dry Maize,White Maize,-,90,4599.9,5400,0
+2023-12-01,Nakuru,Naivasha Market,Dry Maize,White Maize,-,90,4500,5400,0
+2023-11-27,Nakuru,Naivasha Market,Dry Maize,White Maize,-,90,4500,5400,0
+2023-11-10,Nakuru,Naivasha Market,Dry Maize,White Maize,-,90,4500,5400,0
+2024-08-14,Nyandarua,Engineer,Dry Maize,White Maize,-,90,3780,5400,9000
+2023-12-13,Nyandarua,Soko mpya,Dry Maize,White Maize,-,90,4400.1,4875.3,1450
+2023-12-04,Nyandarua,Soko mpya,Dry Maize,White Maize,-,90,4400.1,4875.3,1500
+2026-10-26,Uasin Gishu,Eldoret Main,Dry Maize,White Maize,-,90,4500,4950,270
+2026-10-24,Uasin Gishu,Cheptiret - Uasin Gishu,Dry Maize,White Maize,-,90,3600,4050,50000
+2026-10-23,Uasin Gishu,Cheptiret - Uasin Gishu,Dry Maize,White Maize,-,90,4799.7,5400,5000

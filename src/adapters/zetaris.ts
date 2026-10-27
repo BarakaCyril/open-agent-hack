@@ -247,10 +247,6 @@ export async function cachedRows<T>(
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function networkFailure(error: unknown): string {
   const cause = error && typeof error === "object" && "cause" in error
     ? (error as { cause?: unknown }).cause
@@ -292,9 +288,16 @@ function traceSql(status: "success" | "retrying" | "error" | "fallback", sql: st
   });
 }
 
-async function executeOnce(config: AppConfig, sql: string, limit: number, isRetry = false): Promise<Record<string, unknown>[]> {
+async function executeOnce(
+  config: AppConfig,
+  sql: string,
+  limit: number,
+  isRetry = false,
+  timeoutSeconds?: number,
+): Promise<Record<string, unknown>[]> {
   const url = `${config.ZETARIS_REST_URL.replace(/\/+$/u, "")}/sql-editor/sqls/run`;
-  const timeoutMs = config.SOURCE_TIMEOUT_SECONDS * 1000;
+  const seconds = timeoutSeconds ?? config.SOURCE_TIMEOUT_SECONDS;
+  const timeoutMs = seconds * 1000;
   let token = inMemoryZetarisToken || config.ZETARIS_API_KEY;
   let orgId = inMemoryZetarisOrgId || config.ZETARIS_ORG_ID;
   if (!token || isJwtExpired(token)) {
@@ -334,7 +337,7 @@ async function executeOnce(config: AppConfig, sql: string, limit: number, isRetr
     const cause = error && typeof error === "object" && "cause" in error ? (error as { cause?: unknown }).cause : null;
     const isRefused = cause && typeof cause === "object" && (cause as Record<string, unknown>).code === "ECONNREFUSED";
     throw new RemoteSourceError(
-      timedOut ? `Zetaris timed out after ${config.SOURCE_TIMEOUT_SECONDS}s` : networkFailure(error),
+      timedOut ? `Zetaris timed out after ${seconds}s` : networkFailure(error),
       { timeout: timedOut, retryable: !timedOut && !isRefused, unreachable: true },
     );
   }
@@ -343,7 +346,7 @@ async function executeOnce(config: AppConfig, sql: string, limit: number, isRetr
     if (!isRetry && (response.status === 400 || response.status === 401)) {
       const fresh = await loginAndGetFreshToken(config);
       if (fresh) {
-        return executeOnce(config, sql, limit, true);
+        return executeOnce(config, sql, limit, true, timeoutSeconds);
       }
     }
     throw new RemoteSourceError(`Zetaris HTTP ${response.status}: ${redact(text).slice(0, 180)}`, {
@@ -359,33 +362,19 @@ async function executeOnce(config: AppConfig, sql: string, limit: number, isRetr
   }
 }
 
-async function loadRows(statement: string, bounded: number): Promise<Record<string, unknown>[]> {
-  if (isBreakerOpen()) {
-    throw new RemoteSourceError("Zetaris is currently offline (circuit breaker open)", { retryable: false, unreachable: true });
-  }
+async function loadRows(statement: string, bounded: number, timeoutSeconds?: number): Promise<Record<string, unknown>[]> {
   const config = loadConfig();
-  const attempts = config.MAX_RETRIES + 1;
-  let last: RemoteSourceError | null = null;
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    try {
-      const rows = await executeOnce(config, statement, bounded);
-      traceSql("success", statement, "ok", rows.length, attempt - 1);
-      return rows;
-    } catch (error) {
-      const remote = error instanceof RemoteSourceError
-        ? error
-        : new RemoteSourceError(redact(error instanceof Error ? error.message : "zetaris failed"));
-      last = remote;
-      traceSql(remote.timeout ? "retrying" : "error", statement, remote.message, 0, attempt - 1);
-      if (!remote.unreachable) throw remote;
-      if (remote.timeout || !remote.retryable || attempt >= attempts) {
-        breakerTrippedUntil = Date.now() + 20_000;
-        throw remote;
-      }
-      await sleep(200 * 2 ** (attempt - 1));
-    }
+  try {
+    const rows = await executeOnce(config, statement, bounded, false, timeoutSeconds);
+    traceSql("success", statement, "ok", rows.length, 0);
+    return rows;
+  } catch (error) {
+    const remote = error instanceof RemoteSourceError
+      ? error
+      : new RemoteSourceError(redact(error instanceof Error ? error.message : "zetaris failed"));
+    traceSql("error", statement, remote.message, 0, 0);
+    throw remote;
   }
-  throw last ?? new RemoteSourceError("zetaris failed");
 }
 
 export function clearReadCache(): void {
@@ -401,7 +390,7 @@ export function setSqlRunnerForTests(runner: SqlRunner | null): void {
   resetBreaker();
 }
 
-export async function runSql(sql: string, limit = 500): Promise<Record<string, unknown>[]> {
+export async function runSql(sql: string, limit = 500, timeoutSeconds?: number): Promise<Record<string, unknown>[]> {
   const statement = assertSingleStatement(sql);
   const bounded = Math.max(1, Math.min(5000, limit));
   if (runnerOverride) {
@@ -419,10 +408,51 @@ export async function runSql(sql: string, limit = 500): Promise<Record<string, u
       throw queryError;
     }
   }
-  const key = `${bounded}\n${statement}`;
-  const { value, hit } = await cachedRows(currentContext()?.queryCache, key, () => loadRows(statement, bounded));
+  const key = `${timeoutSeconds ?? ""}\n${bounded}\n${statement}`;
+  const { value, hit } = await cachedRows(currentContext()?.queryCache, key, () => loadRows(statement, bounded, timeoutSeconds));
   if (hit) traceSql("success", statement, "cache", value.length, 0);
   return value;
+}
+
+const PROBE_SQL = "SELECT 1 AS ok";
+
+/** Reachability is SELECT 1, not the success of a later table query. */
+export async function probeZetaris(): Promise<boolean> {
+  try {
+    const rows = await runSql(PROBE_SQL, 1);
+    return rows.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Opens the Zetaris connection when the server starts. A failed probe does not latch sample data by itself. */
+export async function warmZetaris(): Promise<void> {
+  const ok = await probeZetaris();
+  console.log(ok ? "zetaris probe ok" : "zetaris probe failed");
+}
+
+async function sourceIsReachable(): Promise<boolean> {
+  const flagged = currentContext()?.sourceReachable;
+  if (typeof flagged === "boolean") return flagged;
+  return probeZetaris();
+}
+
+/** One retry, then a query error. A miss here does not open a sample-data latch. */
+async function queryWithOneRetry(sql: string, limit: number): Promise<Record<string, unknown>[]> {
+  try {
+    return await runSql(sql, limit);
+  } catch (error) {
+    traceSql("retrying", sql, error instanceof Error ? error.message : "query failed", 0, 1);
+    try {
+      return await runSql(sql, limit);
+    } catch (retryError) {
+      const remote = retryError instanceof RemoteSourceError
+        ? retryError
+        : new ZetarisQueryError(retryError instanceof Error ? retryError.message : "zetaris query failed");
+      throw new ZetarisQueryError(remote.message);
+    }
+  }
 }
 
 /** One statement, including DDL used by scripts/setup_zetaris.ts. The password is redacted in errors. */
@@ -497,20 +527,10 @@ async function readLive<T>(options: {
     synthetic: options.liveSynthetic,
     evidenceSource: evidenceLabel("zetaris", options.table, options.file),
   };
-  try {
-    const rows = await runSql(options.sql, 500);
-    return { value: options.map(rows), ...live };
-  } catch (error) {
-    const remote = error instanceof RemoteSourceError
-      ? error
-      : new ZetarisQueryError(error instanceof Error ? error.message : "zetaris query failed");
-    if (!remote.unreachable) {
-      throw new ZetarisQueryError(remote.message);
-    }
-    if (!loadConfig().SAMPLE_MODE) {
-      throw new ZetarisUnavailableError(remote.message);
-    }
-    markOffline(options.table, options.file, remote.message);
+  const reachable = await sourceIsReachable();
+  if (!reachable) {
+    if (!loadConfig().SAMPLE_MODE) throw new ZetarisUnavailableError("Zetaris probe failed");
+    markOffline(options.table, options.file, "Zetaris probe failed");
     return {
       value: options.sample(),
       via: "sample",
@@ -518,6 +538,8 @@ async function readLive<T>(options: {
       evidenceSource: evidenceLabel("sample", options.table, options.file),
     };
   }
+  const rows = await queryWithOneRetry(options.sql, 500);
+  return { value: options.map(rows), ...live };
 }
 
 function countyClause(county: string): string {
@@ -692,6 +714,12 @@ function offlineCounties(today = new Date().toISOString().slice(0, 10)): CountyC
 
 /** Counties from maize.counties, with dry-maize coverage over the last 14 days. */
 export async function listCounties(): Promise<{ source: "zetaris" | "sample"; counties: CountyCoverage[] }> {
+  const reachable = await sourceIsReachable();
+  if (!reachable) {
+    if (!loadConfig().SAMPLE_MODE) throw new ZetarisUnavailableError("Zetaris probe failed");
+    markOffline("counties", "counties.csv", "Zetaris probe failed");
+    return { source: "sample", counties: offlineCounties() };
+  }
   try {
     const names = await runSql("SELECT county FROM maize.counties", 100);
     const counts = await runSql(zetarisCountyQuoteSql(), 100);
@@ -713,17 +741,29 @@ export async function listCounties(): Promise<{ source: "zetaris" | "sample"; co
     const remote = error instanceof RemoteSourceError
       ? error
       : new ZetarisQueryError(error instanceof Error ? error.message : "county query failed");
-    if (!remote.unreachable) throw new ZetarisQueryError(remote.message);
-    if (!loadConfig().SAMPLE_MODE) throw new ZetarisUnavailableError(remote.message);
-    markOffline("counties", "counties.csv", remote.message);
-    return { source: "sample", counties: offlineCounties() };
+    throw new ZetarisQueryError(remote.message);
   }
 }
 
+/** county_case is the traced cross-source join. Price and weather decisions use their own county-filtered reads. */
+const COUNTY_CASE_TIMEOUT_SECONDS = 30;
+
 export async function traceCountyCase(county: string): Promise<void> {
   const sql = `SELECT county, latest_market_date, quote_count, forecast_date, precipitation_sum, temperature_2m_mean, humidity_pct, storage, daily_loss_pct, rules_synthetic FROM maize.county_case WHERE ${countyClause(county)}`;
+  if (currentContext()?.sourceReachable === false) {
+    traceEvent({
+      action: "county_case",
+      input_summary: redact(sqlSummary(sql)),
+      output_summary: "probe failed; county_case skipped",
+      target_agent: null,
+      confidence: null,
+      retry_count: 0,
+      status: "fallback",
+    });
+    return;
+  }
   try {
-    const rows = await runSql(sql, 80);
+    const rows = await runSql(sql, 80, COUNTY_CASE_TIMEOUT_SECONDS);
     traceEvent({
       action: "county_case",
       input_summary: redact(sqlSummary(sql)),
@@ -734,9 +774,7 @@ export async function traceCountyCase(county: string): Promise<void> {
       status: "success",
     });
   } catch (error) {
-    const remote = error instanceof RemoteSourceError
-      ? error
-      : new ZetarisQueryError(error instanceof Error ? error.message : "county_case failed");
+    const remote = error instanceof Error ? error : new ZetarisQueryError("county_case failed");
     traceEvent({
       action: "county_case",
       input_summary: redact(sqlSummary(sql)),
@@ -744,10 +782,8 @@ export async function traceCountyCase(county: string): Promise<void> {
       target_agent: null,
       confidence: null,
       retry_count: 0,
-      status: remote.unreachable && loadConfig().SAMPLE_MODE ? "fallback" : "error",
+      status: "error",
     });
-    if (remote.unreachable && loadConfig().SAMPLE_MODE) return;
-    throw remote.unreachable ? new ZetarisUnavailableError(remote.message) : new ZetarisQueryError(remote.message);
   }
 }
 
@@ -758,8 +794,11 @@ function sqlDate(value: string): string {
 
 /** White-maize quotes in the claim's own date window, for the critic's recomputation. */
 export async function readWhiteMaizeWindow(county: string, oldest: string, latest: string): Promise<Array<{ date: string; price: number }>> {
+  if (!(await sourceIsReachable())) {
+    throw new RemoteSourceError("Zetaris probe failed", { unreachable: true });
+  }
   const sql = `SELECT market_date, wholesale_price_kes FROM maize.kamis_prices WHERE ${countyClause(county)} AND lower(commodity) = 'dry maize' AND lower(variety) LIKE '%white%' AND unit_kg = 90 AND market_date >= ${sqlDate(oldest)} AND market_date <= ${sqlDate(latest)}`;
-  const rows = await runSql(sql, 500);
+  const rows = await queryWithOneRetry(sql, 500);
   return rows.flatMap((raw) => {
     const row = lowerRow(raw);
     const date = String(row.market_date ?? "").slice(0, 10);

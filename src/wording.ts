@@ -21,12 +21,28 @@ function sameNumber(left: number, right: number): boolean {
   return Math.abs(left - right) <= scale * 1e-9;
 }
 
+function sameAbsolute(left: number, right: number): boolean {
+  return sameNumber(Math.abs(left), Math.abs(right));
+}
+
+/** A model may cite the absolute gap between two figures the tools already computed. */
+function knownDifferences(values: number[]): number[] {
+  const gaps: number[] = [];
+  for (let i = 0; i < values.length; i += 1) {
+    for (let j = i + 1; j < values.length; j += 1) {
+      gaps.push(Math.abs((values[i] ?? 0) - (values[j] ?? 0)));
+    }
+  }
+  return gaps;
+}
+
 /** Numbers in the model text that do not appear in the computed wording. */
 export function mismatchedNumbers(modelText: string, computedText: string): number[] {
   const allowed = extractNumbers(computedText);
+  const accepted = [...allowed, ...knownDifferences(allowed)];
   const bad: number[] = [];
   for (const value of extractNumbers(modelText)) {
-    if (allowed.some((candidate) => sameNumber(value, candidate))) continue;
+    if (accepted.some((candidate) => sameAbsolute(value, candidate))) continue;
     if (bad.some((existing) => sameNumber(existing, value))) continue;
     bad.push(value);
   }

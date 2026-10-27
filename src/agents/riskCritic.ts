@@ -8,6 +8,23 @@ import { traceEvent } from "../tracing.js";
 
 const ESCALATE = new Set<CriticReason>(["coverage", "farmer_limits", "missing_input"]);
 
+export function isHardStop(reason: CriticReason): boolean {
+  return ESCALATE.has(reason);
+}
+
+/** Numbers and flags the critic judged. A revision that keeps this signature is unresolvable. */
+export function claimRevisionSignature(market: Claim | null, storage: Claim | null): string {
+  const figures = (claim: Claim | null) => {
+    if (!claim) return "none";
+    const picked: Record<string, number | boolean> = {};
+    for (const [key, value] of Object.entries(claim.payload)) {
+      if (typeof value === "number" || typeof value === "boolean") picked[key] = value;
+    }
+    return JSON.stringify(Object.entries(picked).sort(([left], [right]) => left.localeCompare(right)));
+  };
+  return `${figures(market)}|${figures(storage)}`;
+}
+
 export interface JudgeInput {
   today: string;
   bags: number;
@@ -54,14 +71,14 @@ export function judgeClaims(input: JudgeInput): CriticDecision {
   } else {
     if (input.market.evidence.length === 0) {
       reasons.push("missing_evidence");
-      notes.push("The price claim has no evidence receipt.");
+      notes.push("The price claim has no evidence receipt. MarketAnalyst can attach the receipt from the price read.");
       targets.add("MarketAnalyst");
     }
     const outlierCount = num(market, "outlier_count") ?? 0;
     const removed = num(market, "outliers_removed") ?? 0;
     if (outlierCount > removed) {
       reasons.push("outlier");
-      notes.push(`${outlierCount - removed} price outlier(s) are still inside the percentile window.`);
+      notes.push(`${outlierCount - removed} price outlier(s) are still inside the percentile window. MarketAnalyst can drop those quotes and recompute the band.`);
       targets.add("MarketAnalyst");
     }
     const oldest = str(market, "oldest_date");
@@ -69,12 +86,12 @@ export function judgeClaims(input: JudgeInput): CriticDecision {
     // Longer than MIXED_PRICE_WINDOW_DAYS means the band blends a stale quote with a current one.
     if (oldest && latest && daysBetween(oldest, latest) > MIXED_PRICE_WINDOW_DAYS) {
       reasons.push("freshness");
-      notes.push(mixedAgeNote(oldest, latest) ?? `The price window runs from ${oldest} to ${latest}.`);
+      notes.push(`${mixedAgeNote(oldest, latest) ?? `The price window runs from ${oldest} to ${latest}.`} MarketAnalyst can recompute the band from quotes inside 21 days.`);
       targets.add("MarketAnalyst");
     }
     if (latest && daysBetween(latest, input.today) > staleDays) {
       reasons.push("freshness");
-      notes.push(`The newest price quote is ${latest}, more than ${staleDays} days before ${input.today}.`);
+      notes.push(`The newest price quote is ${latest}, more than ${staleDays} days before ${input.today}. MarketAnalyst can refresh KAMIS and recompute the band from newer quotes.`);
       targets.add("MarketAnalyst");
     }
     const n = num(market, "n");
@@ -87,14 +104,14 @@ export function judgeClaims(input: JudgeInput): CriticDecision {
       const maize = typeof item.maize_type === "string" ? item.maize_type : "";
       if (maize && maize !== "white") {
         reasons.push("maize_type_mismatch");
-        notes.push(`News item ${String(item.id ?? "")} is tagged ${maize}, not white maize.`);
+        notes.push(`News item ${String(item.id ?? "")} is tagged ${maize}, not white maize. MarketAnalyst can drop that item.`);
         targets.add("MarketAnalyst");
         break;
       }
     }
     if (market.unresolved_conflict === true) {
       reasons.push("contradiction");
-      notes.push("A kept news item disagrees with the direction of the cleaned price series.");
+      notes.push("A kept news item disagrees with the direction of the cleaned price series. MarketAnalyst can drop the disagreeing item.");
       targets.add("MarketAnalyst");
     }
   }
@@ -110,25 +127,31 @@ export function judgeClaims(input: JudgeInput): CriticDecision {
   } else {
     if (input.storageClaim.evidence.length === 0 || num(storage, "rules_matched") === 0) {
       reasons.push("missing_evidence");
-      notes.push(str(storage, "error") ?? "The loss claim has no matched storage rule.");
+      notes.push(`${str(storage, "error") ?? "The loss claim has no matched storage rule."} StorageWeatherAnalyst can file the loss from the daily forecast and the storage rules.`);
       targets.add("StorageWeatherAnalyst");
     }
     const forecastAsOf = str(storage, "forecast_as_of");
     if (forecastAsOf && daysBetween(forecastAsOf, input.today) > staleDays) {
       reasons.push("freshness");
-      notes.push(`The forecast is dated ${forecastAsOf}, more than ${staleDays} days before ${input.today}.`);
+      notes.push(`The forecast is dated ${forecastAsOf}, more than ${staleDays} days before ${input.today}. StorageWeatherAnalyst can read the current daily forecast and recompute the loss.`);
       targets.add("StorageWeatherAnalyst");
     }
-    const rain = num(storage, "total_rain_mm") ?? 0;
     const loss = num(storage, "loss_mean");
-    if (input.storage === "open_bags" && rain >= 20 && loss !== null && loss < 0.05) {
+    const threshold = num(storage, "heavy_rain_mm_min");
+    const daily = Array.isArray(storage.daily_rain_mm)
+      ? storage.daily_rain_mm.filter((value): value is number => typeof value === "number" && Number.isFinite(value))
+      : [];
+    const heavyDays = threshold === null ? [] : daily.filter((mm) => mm >= threshold);
+    if (heavyDays.length > 0 && loss !== null && loss < 0.05) {
       reasons.push("contradiction");
-      notes.push(`Open bags and ${rain.toFixed(0)} mm of rain produced only ${(loss * 100).toFixed(1)}% expected loss.`);
+      notes.push(
+        `${heavyDays.length} forecast day(s) reached ${threshold} mm, the heavy-rain threshold for ${input.storage} (the highest rain_mm_min in the loss table, judged per day, not as a 7-day total). Expected loss is ${(loss * 100).toFixed(1)}%, under 5%. StorageWeatherAnalyst can recompute the loss from those daily rows.`,
+      );
       targets.add("StorageWeatherAnalyst");
     }
     if (storage.implausible_forecast === true) {
       reasons.push("outlier");
-      notes.push("The forecast contains a value outside a plausible daily range.");
+      notes.push("The forecast contains a value outside a plausible daily range. StorageWeatherAnalyst can drop that day and recompute the loss.");
       targets.add("StorageWeatherAnalyst");
     }
   }
@@ -143,9 +166,6 @@ export function judgeClaims(input: JudgeInput): CriticDecision {
   const unique = [...new Set(reasons)];
   const action = unique.some((reason) => ESCALATE.has(reason)) ? "escalate" : unique.length > 0 ? "reject" : "approve";
   const confidence = action === "approve" ? 0.8 : action === "reject" ? 0.45 : 0.2;
-  if (action === "escalate" && !notes.some((note) => note.includes("?"))) {
-    notes.push("Which market, storage type, and written buyer offer should we use?");
-  }
   return {
     action,
     reasons: unique,
@@ -193,7 +213,7 @@ export async function verifyMarketClaim(state: CaseState, decision: CriticDecisi
     decision.action = "reject";
     decision.confidence = 0.45;
     decision.notes.push(
-      `Verification mismatch: Zetaris recomputed n=${stats.n}, P50 ${Math.round(stats.p50)}, newest ${stats.latestDate}.`,
+      `Verification mismatch: Zetaris recomputed n=${stats.n}, P50 ${Math.round(stats.p50)}, newest ${stats.latestDate}. MarketAnalyst can recompute the band from that same window.`,
     );
     if (!decision.target_agents.includes("MarketAnalyst")) decision.target_agents.push("MarketAnalyst");
     return decision;
@@ -213,7 +233,7 @@ export async function verifyMarketClaim(state: CaseState, decision: CriticDecisi
     if (unreachable && loadConfig().SAMPLE_MODE) return decision;
     decision.action = "reject";
     decision.confidence = 0.45;
-    decision.notes.push("Verification could not recompute the price claim from Zetaris.");
+    decision.notes.push("Verification could not recompute the price claim from Zetaris. MarketAnalyst can recompute the band from a successful price read.");
     if (!decision.target_agents.includes("MarketAnalyst")) decision.target_agents.push("MarketAnalyst");
     return decision;
   }
@@ -236,7 +256,6 @@ export async function reviewClaims(state: CaseState): Promise<CriticDecision> {
     user: `Action ${decision.action}. Reasons: ${decision.reasons.join(", ") || "none"}. Notes: ${decision.notes.join(" ")}`,
   });
   if (note.fallback) state.narrative_fallback = true;
-  else if (note.text) decision.notes.push(note.text.slice(0, 300));
 
   for (const agent of ["MarketAnalyst", "StorageWeatherAnalyst"]) {
     const claim = latestClaim(state, agent);

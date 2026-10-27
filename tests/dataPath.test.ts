@@ -24,10 +24,24 @@ describe("Zetaris failure semantics", () => {
   it("does not substitute sample rows when Zetaris answers and the query fails", async () => {
     process.env.SAMPLE_MODE = "true";
     resetConfigForTests();
-    setSqlRunnerForTests(async () => {
+    setSqlRunnerForTests(async (sql) => {
+      if (/select\s+1\b/iu.test(sql)) return [{ ok: 1 }];
       throw new RemoteSourceError("table maize.kamis_prices failed", { unreachable: false });
     });
     await expect(readPrices("Kirinyaga")).rejects.toBeInstanceOf(ZetarisQueryError);
+  });
+
+  it("retries a timed-out query once and does not substitute sample rows", async () => {
+    process.env.SAMPLE_MODE = "true";
+    resetConfigForTests();
+    let priceCalls = 0;
+    setSqlRunnerForTests(async (sql) => {
+      if (/select\s+1\b/iu.test(sql)) return [{ ok: 1 }];
+      priceCalls += 1;
+      throw new RemoteSourceError("Zetaris timed out after 12s", { timeout: true, unreachable: true });
+    });
+    await expect(readPrices("Kirinyaga")).rejects.toBeInstanceOf(ZetarisQueryError);
+    expect(priceCalls).toBe(2);
   });
 
   it("uses labelled offline sample rows only when Zetaris is unreachable and SAMPLE_MODE is true", async () => {
@@ -56,12 +70,13 @@ describe("Zetaris failure semantics", () => {
     const seen: string[] = [];
     setSqlRunnerForTests(async (sql) => {
       seen.push(sql);
+      if (/select\s+1\b/iu.test(sql)) return [{ ok: 1 }];
       return [];
     });
     const { readWeather } = await import("../src/adapters/zetaris.js");
     await readWeather("Uasin Gishu");
-    expect(seen[0]).toContain("FROM maize.weather_daily WHERE county = 'Uasin Gishu'");
-    expect(seen[0]).not.toContain("UNION");
+    expect(seen.some((sql) => sql.includes("FROM maize.weather_daily WHERE county = 'Uasin Gishu'"))).toBe(true);
+    expect(seen.some((sql) => sql.includes("UNION"))).toBe(false);
   });
 });
 

@@ -95,7 +95,18 @@ export function createInitialState(request: RunRequest, traceId = randomUUID(), 
     synthetic_inputs: [],
     narrative_fallback: false,
     refresh_limits: [],
+    caveats: [],
+    rejected_signature: null,
   };
+}
+
+/** The limitation follows the latest read. A later live forecast clears a sample-weather flag. */
+export function setSyntheticInput(state: CaseState, label: string, synthetic: boolean): void {
+  if (synthetic) {
+    if (!state.synthetic_inputs.includes(label)) state.synthetic_inputs.push(label);
+    return;
+  }
+  state.synthetic_inputs = state.synthetic_inputs.filter((item) => item !== label);
 }
 
 export function latestClaim(state: CaseState, agent: string): Claim | undefined {

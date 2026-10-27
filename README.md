@@ -112,7 +112,7 @@ Synthetic, loaded once from `data/sample/` and flagged in the view:
 
 ## Offline mode
 
-`SAMPLE_MODE=true` reads `data/sample/` only when Zetaris is unreachable (no HTTP response). The trace says `offline mode` and `data_source` is `sample`. A query that Zetaris answers and then rejects is an error. It is never replaced with sample rows. `SAMPLE_MODE=false` and an unreachable Zetaris return HTTP 503 `{ "code": "zetaris_unavailable" }`. A reachable query failure returns HTTP 502 `{ "code": "zetaris_query_failed" }`. The sample loader is the seed script and this offline path. Agents do not read the files themselves.
+Reachability is `SELECT 1`, probed when the server starts and again at the start of each run. `SAMPLE_MODE=true` reads `data/sample/` for the whole run only when that probe fails. The trace says `offline mode` and `data_source` is `sample`. A later query that times out or fails is retried once, then traced as an error. It becomes `no_recommendation` with reason `data unavailable`. It does not switch the rest of the run to sample rows. `SAMPLE_MODE=false` and a failed probe return HTTP 503 `{ "code": "zetaris_unavailable" }`. `maize.county_case` is only the traced cross-source join. Prices and weather are read on their own county filters. A `county_case` failure is an error event and does not change `data_source`.
 
 ## Zetaris data setup
 
@@ -175,21 +175,23 @@ curl -s -X POST http://localhost:8000/run \
 
 ## Sample mode
 
-Offline mode is described above. `data_source` is `zetaris` when every read hit a `maize` view, `sample` when Zetaris was unreachable and `SAMPLE_MODE=true`, and `mixed` when a run used both. Identical SQL inside one run is cached and traced as `cache`. A successful Postgres upsert clears that cache.
+Offline mode is described above. `data_source` is `zetaris` when the probe passed and the reads hit `maize` views, and `sample` when the probe failed and `SAMPLE_MODE=true`. The limitations line `Data source` uses that same value. Identical SQL inside one run is cached and traced as `cache`. A successful Postgres upsert clears that cache.
 
 ## Failure handling
 
 | Failure | What the run does |
 | --- | --- |
-| Zetaris unreachable and `SAMPLE_MODE=true` | Labelled offline mode. Trace status `fallback`. Response `data_source` is `sample`. |
-| Zetaris unreachable and `SAMPLE_MODE=false` | HTTP 503 `zetaris_unavailable`. No sample rows. |
-| Zetaris answers and the query fails | HTTP 502 `zetaris_query_failed`. The error is traced. Sample rows are not substituted. |
+| Probe fails and `SAMPLE_MODE=true` | Labelled offline mode for the whole run. Trace status `fallback`. Response `data_source` is `sample`. |
+| Probe fails and `SAMPLE_MODE=false` | HTTP 503 `zetaris_unavailable`. No sample rows. |
+| Probe passes, then a query fails or times out | One retry, then an error event and `no_recommendation` with reason `data unavailable`. Sample rows are not substituted. |
+| `county_case` fails | Error event only. Prices and weather still use their own county-filtered reads. |
 | Meterless 401 or 403 | Reported as unauthorized. The chat call surfaces the server message and does not treat it as offline. |
 | Meterless 429 | Waits 2s, 4s, then 8s. |
 | Meterless timeout or unreachable | Chat calls abort at 180s. Wording falls back to the computed figures. Trace status `fallback`. |
 | Placeholder token `rt-local` | Refused before any request. Health reports unauthorized. |
-| Fewer than 3 fresh white-maize quotes | `no_recommendation`, with the row count and a question. |
-| Critic rejection | Back to the owning analyst. Maximum 2 revisions. |
+| Fewer than 3 fresh white-maize quotes | `no_recommendation`, with the row count. The farmer is not asked to correct an input. |
+| Critic rejection | The note names a change the owning analyst can make. Maximum 2 revisions. A revision that keeps the same figures is `unresolvable`: it becomes a caveat in `limitations` and lowers confidence, unless the reason is coverage, a missing input, or a cash need the sale cannot cover. |
+| Heavy rain | One forecast day at or above the highest `rain_mm_min` for that storage type. Open bags: 20 mm in a day. The 7-day total is not the test. Loss under 5% on such a day is a contradiction. |
 | Stale prices or forecast (`STALE_DAYS`, default 3), or a price window longer than 21 days | RiskCritic rejects. The planner calls the KAMIS and Open-Meteo refresh tools, then the analysts query again, unless `REFRESH_ENABLED` is false or the last success is inside `REFRESH_TTL_MINUTES`. Maximum 2 refreshes. A failed refresh keeps the previous rows and their real age. A missing or read-only host directory is `refresh_unavailable` in the trace and in `limitations`. A mixed window is stated as mixed-age prices. |
 | Rounds | Maximum 3, then `no_recommendation` if still unapproved. |
 | H-MEM write without a source | Rejected by construction. Farmer records always carry `source: farmer:<id>`. |
@@ -244,7 +246,7 @@ Third-party and open source:
 - Open-Meteo, CC BY 4.0, https://open-meteo.com/
 - OpenStreetMap contributors, ODbL, for `data/counties.csv`
 - KAMIS prices, Ministry of Agriculture, https://kamis.kilimo.go.ke/site/market. Terms of use are unconfirmed.
-- npm dependencies in `package.json`: fastify, zod; devDependencies @types/node, tsx, typescript, vitest.
+- npm dependencies in `package.json`: fastify, pg, zod; devDependencies @types/node, @types/pg, tsx, typescript, vitest.
 - npm dependencies in `ui/package.json`: clsx, lucide-react, react, react-dom, recharts, tailwind-merge; devDependencies @types/react, @types/react-dom, @vitejs/plugin-react, autoprefixer, postcss, tailwindcss, typescript, vite.
 
 Synthetic, and labelled synthetic in the files:

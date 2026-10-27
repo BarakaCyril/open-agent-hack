@@ -5,10 +5,11 @@ import { createTracer, runContext, asAgent, traceEvent, currentModelIdentity } f
 import { analyzeMarket } from "../agents/marketAnalyst.js";
 import { analyzeStorage } from "../agents/storageWeatherAnalyst.js";
 import { reviewClaims } from "../agents/riskCritic.js";
-import { resolveDataSource, traceCountyCase } from "../adapters/zetaris.js";
+import { probeZetaris, resolveDataSource, traceCountyCase, ZetarisQueryError, ZetarisUnavailableError } from "../adapters/zetaris.js";
+import { claimRevisionSignature, isHardStop } from "../agents/riskCritic.js";
 import { assemble, buildNoRecommendation, recallAndGate, rememberOutcome } from "../agents/planner.js";
 import { annotateRecheck, loadPrior } from "../agents/watcher.js";
-import { createInitialState } from "./state.js";
+import { createInitialState, latestClaim } from "./state.js";
 import { continueAfterCritique } from "./refresh.js";
 
 export const LOOP_LIMITS = { maxRevisions: 2, maxRefreshes: 2, maxRounds: 3 } as const;
@@ -17,6 +18,26 @@ export interface LoopBag {
   round: number;
   revisions: number;
   refreshes: number;
+}
+
+/** A second pass that keeps the same figures is a caveat, except for a hard stop. */
+export function caveatForRepeatedClaim(input: {
+  action: "approve" | "reject" | "escalate";
+  reasons: readonly CriticReason[];
+  previous: string | null;
+  next: string;
+  notes: readonly string[];
+}): { action: "approve" | "reject" | "escalate"; caveat: string | null; signature: string | null } {
+  const hard = input.reasons.some((reason) => isHardStop(reason));
+  if (input.action === "reject" && !hard && input.previous !== null && input.previous === input.next) {
+    const caveat = `Unresolvable: the revised claim kept the same figures. ${input.notes.join(" ")}`.replace(/\s+/g, " ").trim();
+    return { action: "approve", caveat, signature: input.previous };
+  }
+  return {
+    action: input.action,
+    caveat: null,
+    signature: input.action === "reject" && !hard ? input.next : input.previous,
+  };
 }
 
 export function nextLoopAction(input: {
@@ -89,7 +110,7 @@ export async function runCase(request: RunRequest, traceId = randomUUID()): Prom
   const state = createInitialState(request, traceId);
   const sampleNotes: string[] = [];
   const close = (response: RunResponse): RunResponse => {
-    const dataSource = resolveDataSource(state.sources, sampleNotes.length) ?? "sample";
+    const dataSource = resolveDataSource(state.sources) ?? "sample";
     const identity = currentModelIdentity();
     const withSource = RunResponseSchema.parse({
       ...response,
@@ -111,12 +132,17 @@ export async function runCase(request: RunRequest, traceId = randomUUID()): Prom
     });
     return withSource;
   };
+    const sourceReachable = await probeZetaris();
+    if (!sourceReachable && !config.SAMPLE_MODE) {
+      throw new ZetarisUnavailableError("Zetaris probe failed");
+    }
     return await runContext.run({
     tracer,
     agent: "Planner",
     queryCache: new Map(),
     modelAnswer: { provider: null, model: null },
-    dataSource: () => resolveDataSource(state.sources, sampleNotes.length),
+    sourceReachable,
+    dataSource: () => resolveDataSource(state.sources),
     markSampleFallback(detail) {
       sampleNotes.push(detail);
     },
@@ -124,6 +150,7 @@ export async function runCase(request: RunRequest, traceId = randomUUID()): Prom
       state.narrative_fallback = true;
     },
   }, async () => {
+    try {
     traceEvent({
       action: "start",
       input_summary: `${request.mode} ${request.county} bags=${request.bags} storage=${request.storage}`,
@@ -207,7 +234,32 @@ export async function runCase(request: RunRequest, traceId = randomUUID()): Prom
       },
       async critique() {
         const decision = await asAgent("RiskCritic", () => reviewClaims(state));
-        return decision;
+        const signature = claimRevisionSignature(
+          latestClaim(state, "MarketAnalyst") ?? null,
+          latestClaim(state, "StorageWeatherAnalyst") ?? null,
+        );
+        const settled = caveatForRepeatedClaim({
+          action: decision.action,
+          reasons: decision.reasons,
+          previous: state.rejected_signature,
+          next: signature,
+          notes: decision.notes,
+        });
+        state.rejected_signature = settled.signature;
+        if (settled.caveat) {
+          state.caveats.push(settled.caveat);
+          traceEvent({
+            action: "unresolvable",
+            input_summary: decision.reasons.join(","),
+            output_summary: settled.caveat,
+            target_agent: decision.target_agents[0] ?? null,
+            confidence: decision.confidence,
+            retry_count: bag.revisions,
+            status: "fallback",
+          });
+          return { action: "approve" as const, reasons: [] };
+        }
+        return { action: settled.action, reasons: decision.reasons };
       },
       async onContinue(effect) {
         await continueAfterCritique(effect, state, bag.refreshes);
@@ -235,9 +287,7 @@ export async function runCase(request: RunRequest, traceId = randomUUID()): Prom
         : "The review loop ended without an approved claim.";
       state.escalation = state.escalation ?? {
         reason,
-        question: state.last_decision?.action === "escalate"
-          ? state.last_decision.notes.find((note) => note.includes("?")) ?? "Which market, storage type, and written offer should we use?"
-          : "Which of the buyer offer, the storage type, or the market quote should we treat as wrong?",
+        question: null,
       };
       const blocked = await asAgent("Planner", () => buildNoRecommendation(state));
       await asAgent("Planner", () => rememberOutcome(state, blocked));
@@ -255,6 +305,22 @@ export async function runCase(request: RunRequest, traceId = randomUUID()): Prom
     }
     await asAgent("Planner", () => rememberOutcome(state, response));
     return close(response);
+    } catch (error) {
+      if (!(error instanceof ZetarisQueryError)) throw error;
+      state.escalation = { reason: "data unavailable", question: null };
+      traceEvent({
+        action: "zetaris_sql",
+        input_summary: "data read",
+        output_summary: error.message,
+        target_agent: null,
+        confidence: null,
+        retry_count: 1,
+        status: "error",
+      });
+      const blocked = await asAgent("Planner", () => buildNoRecommendation(state));
+      await asAgent("Planner", () => rememberOutcome(state, blocked));
+      return close(blocked);
+    }
   });
   } finally {
     tracer.finish();

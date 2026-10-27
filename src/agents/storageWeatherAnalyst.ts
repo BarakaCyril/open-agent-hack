@@ -2,8 +2,8 @@ import { readRules, readWeather } from "../adapters/zetaris.js";
 import { chat } from "../adapters/meterless.js";
 import { loadConfig } from "../config.js";
 import type { CaseState } from "../schemas.js";
-import { expectedLoss } from "../tools/spoilage.js";
-import { describeEvidence, pct, roundTo } from "../orchestration/state.js";
+import { expectedLoss, heavyRainMmMin } from "../tools/spoilage.js";
+import { describeEvidence, pct, roundTo, setSyntheticInput } from "../orchestration/state.js";
 import { traceEvent } from "../tracing.js";
 
 export async function analyzeStorage(state: CaseState): Promise<void> {
@@ -12,8 +12,8 @@ export async function analyzeStorage(state: CaseState): Promise<void> {
   const rulesHit = await readRules();
   state.sources.weather = weatherHit.via;
   state.sources.rules = rulesHit.via;
-  if (weatherHit.synthetic && !state.synthetic_inputs.includes("weather")) state.synthetic_inputs.push("weather");
-  if (rulesHit.synthetic && !state.synthetic_inputs.includes("rules")) state.synthetic_inputs.push("rules");
+  setSyntheticInput(state, "weather", weatherHit.via === "sample" || weatherHit.synthetic);
+  setSyntheticInput(state, "rules", rulesHit.synthetic);
 
   const series = weatherHit.value;
   const forecast = series?.days ?? [];
@@ -66,6 +66,8 @@ export async function analyzeStorage(state: CaseState): Promise<void> {
       days: loss?.days ?? forecast.length,
       rules_matched: loss?.rulesMatched ?? 0,
       total_rain_mm: loss?.totalRainMm ?? forecast.reduce((sum, day) => sum + day.rain_mm, 0),
+      daily_rain_mm: forecast.map((day) => day.rain_mm),
+      heavy_rain_mm_min: heavyRainMmMin(storage, rulesHit.value),
       forecast_as_of: asOf || "undated",
       forecast_days: forecast.length,
       implausible_forecast: implausible,

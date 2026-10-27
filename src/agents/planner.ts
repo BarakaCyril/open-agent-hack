@@ -6,7 +6,7 @@ import { isWhiteMaizeBag } from "../adapters/sampleData.js";
 import { RunResponseSchema, type CaseState, type RunResponse } from "../schemas.js";
 import { EV_SEED, describeLiquidityPenalty, expectedValue, type EvInput, type EvResult } from "../tools/expectedValue.js";
 import { projectPriceBand, type PriceStats } from "../tools/prices.js";
-import { addDays, daysBetween, freshnessLabel, kes, latestClaim, mixedAgeNote, pct, roundTo } from "../orchestration/state.js";
+import { addDays, daysBetween, freshnessLabel, kes, latestClaim, mixedAgeNote, pct, roundTo, setSyntheticInput } from "../orchestration/state.js";
 import { currentModelIdentity, traceEvent } from "../tracing.js";
 import { isTwoPlainSentences, limitToTwoPlainSentences, plainText } from "../wording.js";
 
@@ -37,9 +37,7 @@ export async function recallAndGate(state: CaseState): Promise<void> {
   const weather = await readWeather(state.request.county);
   state.sources.prices = prices.via;
   state.sources.weather = weather.via;
-  if (weather.via === "sample" && weather.synthetic && !state.synthetic_inputs.includes("weather")) {
-    state.synthetic_inputs.push("weather");
-  }
+  setSyntheticInput(state, "weather", weather.via === "sample" || weather.synthetic);
 
   const white = prices.value.filter((row) => isWhiteMaizeBag(row));
   const fresh = white.filter((row) => {
@@ -91,32 +89,136 @@ export async function recallAndGate(state: CaseState): Promise<void> {
   }
 }
 
+function criticNotes(state: CaseState): string[] {
+  return (state.last_decision?.notes ?? [])
+    .map((note) => note.replace(/\blikely\b/giu, "").replace(/\s+/g, " ").trim())
+    .filter((note) => note.length > 0 && !/\blikely\b/iu.test(note));
+}
+
+/** Abstention text comes from the blocking rule and the critic notes. The model does not write it. */
+export function abstentionCopy(state: CaseState): {
+  reason: string;
+  plain_reply: string;
+  question_for_farmer: string | null;
+  what_would_change_this_advice: string[];
+} {
+  const reasons = new Set(state.last_decision?.reasons ?? []);
+  const notes = criticNotes(state);
+  const reasonText = (state.escalation?.reason ?? "").replace(/\blikely\b/giu, "").replace(/\s+/g, " ").trim();
+  const county = state.request.county;
+  const rows = state.coverage.fresh_price_rows;
+  const rowWord = rows === 1 ? "row" : "rows";
+
+  if (/data unavailable/iu.test(reasonText)) {
+    return {
+      reason: "data unavailable",
+      question_for_farmer: null,
+      what_would_change_this_advice: [
+        `A recommendation needs ${county} prices and the daily forecast to come back from Zetaris.`,
+      ],
+      plain_reply: limitToTwoPlainSentences(ensureTwo(
+        "This run returns no recommendation because the price or forecast data was unavailable.",
+        "The query was retried once and still failed.",
+      )),
+    };
+  }
+
+  if (state.coverage.blocking || (reasons.has("coverage") && rows < BLOCKING_ROWS)) {
+    const countSentence = `${county} has ${rows} fresh white-maize price ${rowWord}, so this run returns no recommendation.`;
+    const need = `A recommendation needs at least ${BLOCKING_ROWS} white-maize quotes for ${county} in the last ${FRESH_DAYS} days.`;
+    return {
+      reason: state.coverage.note || countSentence,
+      question_for_farmer: null,
+      what_would_change_this_advice: [need, ...notes.filter((note) => !/quotes/iu.test(note))].slice(0, 3),
+      plain_reply: limitToTwoPlainSentences(ensureTwo(countSentence, need)),
+    };
+  }
+
+  if (reasons.has("coverage")) {
+    const stale = notes.find((item) => /newest price quote/iu.test(item));
+    const cleaned = notes.find((item) => /cleaned white-maize/iu.test(item));
+    const explanation = stale ?? cleaned ?? notes[0] ?? `${county} already has ${rows} white-maize price ${rowWord} in the last ${FRESH_DAYS} days.`;
+    const lead = stale
+      ? "This run returns no recommendation because the newest white-maize quote is too old to price a sale."
+      : "This run returns no recommendation because the cleaned price window has fewer than 3 white-maize quotes.";
+    const change = stale
+      ? `A newer white-maize quote for ${county} would replace the stale price and let this run continue.`
+      : `At least ${BLOCKING_ROWS} cleaned white-maize quotes in the window used for the price band would let this run continue.`;
+    return {
+      reason: explanation,
+      question_for_farmer: null,
+      what_would_change_this_advice: [change, ...notes.filter((note) => note !== explanation)].slice(0, 3),
+      plain_reply: limitToTwoPlainSentences(ensureTwo(lead, explanation)),
+    };
+  }
+
+  if (reasons.has("farmer_limits")) {
+    const note = notes.find((item) => /cash need/iu.test(item))
+      ?? "The cash need is above what a full sale at the stated offer would raise.";
+    return {
+      reason: note,
+      question_for_farmer: "What cash amount do you need, and what offer per 90 kg bag is on the table?",
+      what_would_change_this_advice: [
+        "A cash need the stated offer can cover, or a higher offer per 90 kg bag, would remove this block.",
+      ],
+      plain_reply: limitToTwoPlainSentences(ensureTwo(
+        "This run returns no recommendation because the cash need is higher than a full sale at the stated offer would raise.",
+        note,
+      )),
+    };
+  }
+
+  if (reasons.has("missing_input")) {
+    const note = notes.find((item) => /storage|offer|cash|bag|county/iu.test(item)) ?? "A required input is missing.";
+    const lower = note.toLowerCase();
+    const question = lower.includes("storage")
+      ? "Which storage are the bags in: open bags, a crib, a hermetic bag, or a dry store?"
+      : lower.includes("offer")
+        ? "What offer per 90 kg bag is on the table?"
+        : lower.includes("bag")
+          ? "How many 90 kg bags are you deciding on?"
+          : lower.includes("county")
+            ? "Which county should this decision use?"
+            : null;
+    return {
+      reason: note,
+      question_for_farmer: question,
+      what_would_change_this_advice: [note],
+      plain_reply: limitToTwoPlainSentences(ensureTwo("This run returns no recommendation because a required input is missing.", note)),
+    };
+  }
+
+  const detail = notes[0] || reasonText || "The review could not approve the claims.";
+  return {
+    reason: detail,
+    question_for_farmer: null,
+    what_would_change_this_advice: notes.length > 0 ? notes.slice(0, 3) : [detail],
+    plain_reply: limitToTwoPlainSentences(ensureTwo("This run returns no recommendation.", detail)),
+  };
+}
+
 export async function buildNoRecommendation(state: CaseState): Promise<RunResponse> {
-  const reason = state.escalation?.reason || state.coverage.note || "The evidence was not strong enough to support an action.";
-  const question = state.escalation?.question ?? "Which figure should we correct: the market, the storage type, or the buyer offer?";
-  const lead = state.coverage.blocking
-    ? `${state.request.county} has ${state.coverage.fresh_price_rows} fresh white-maize price ${state.coverage.fresh_price_rows === 1 ? "row" : "rows"}, so this run returns no recommendation.`
-    : "This run returns no recommendation because the review could not approve the claims.";
-  const phrased = await phrase(state, "Planner", `${lead} ${question}`, null);
+  const copy = abstentionCopy(state);
+  const dataSource = resolveDataSource(state.sources) ?? "sample";
   const response: RunResponse = {
     verdict: "no_recommendation",
     hold_days: null,
     price_range_per_90kg_bag: publishedPriceRange("no_recommendation", null),
     decision_values_kes: null,
-    data_source: resolveDataSource(state.sources) ?? "sample",
+    data_source: dataSource,
     confidence: 0,
     evidence: evidenceFrom(state),
-    reasoning_trace_summary: [noRecommendationSummary(state.coverage.note, reason), mixedAgeFrom(state)].filter(Boolean).join(" ").slice(0, 1200),
-    what_would_change_this_advice: [
-      `A recommendation needs at least ${BLOCKING_ROWS} white-maize quotes for ${state.request.county} in the last ${FRESH_DAYS} days, plus a forecast that is current and physically plausible.`,
-    ],
+    reasoning_trace_summary: [noRecommendationSummary(state.coverage.note, copy.reason), mixedAgeFrom(state)].filter(Boolean).join(" ").slice(0, 1200),
+    what_would_change_this_advice: copy.what_would_change_this_advice,
     limitations: limitationsFor(state),
-    recheck_schedule: `Recheck on ${addDays(state.today, 2)} or as soon as you can answer the question.`,
-    plain_reply: limitToTwoPlainSentences(isTwoPlainSentences(phrased) ? phrased : ensureTwo(reason, question)),
+    recheck_schedule: copy.question_for_farmer
+      ? `Recheck on ${addDays(state.today, 2)} or as soon as you can answer the question.`
+      : `Recheck on ${addDays(state.today, 2)}.`,
+    plain_reply: copy.plain_reply,
     ...currentModelIdentity(),
     trace_id: state.trace_id,
-    reason,
-    question_for_farmer: question,
+    reason: copy.reason,
+    question_for_farmer: copy.question_for_farmer,
   };
   return RunResponseSchema.parse(response);
 }
@@ -165,6 +267,7 @@ export async function assemble(state: CaseState): Promise<RunResponse> {
   if (state.revision_counts.total > 0) confidence -= 0.05;
   if (state.coverage.thin) confidence = Math.min(confidence, 0.45);
   if (state.sources.prices === "sample") confidence -= 0.1;
+  if (state.caveats.length > 0) confidence -= 0.15 * state.caveats.length;
   confidence = roundTo(Math.max(0.05, Math.min(0.95, confidence)));
   const holdDays = ev.best === "hold" ? days : null;
   const penaltyNote = describeLiquidityPenalty(ev);
@@ -319,7 +422,7 @@ export function isTwoSentences(text: string): boolean {
   return isTwoPlainSentences(text);
 }
 
-function limitationsFor(state: CaseState): string[] {
+export function limitationsFor(state: CaseState): string[] {
   const dataSource = resolveDataSource(state.sources) ?? "sample";
   const lines = [
     "Decision support only. This is not financial advice and it is not an offer to buy or sell maize.",
@@ -327,6 +430,7 @@ function limitationsFor(state: CaseState): string[] {
     "Values come from a fixed-seed Monte Carlo over the cleaned price band and the storage-loss rules.",
     "Farmer history is stored in H-MEM (profile, verdicts, and offer gaps) under data/hmem.",
   ];
+  lines.push(...state.caveats);
   if (state.sources.prices === "sample") {
     lines.push("Offline mode: price rows were read from data/sample/kamis_dry_maize.csv because Zetaris was unreachable.");
   }

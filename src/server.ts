@@ -166,6 +166,18 @@ export function buildServer(): FastifyInstance {
 
   const liveRuns = new Map<string, Promise<RunResponse>>();
 
+  async function canonicalCounty(county: string): Promise<string | undefined> {
+    const listed = await listCounties();
+    return listed.counties.find((entry) => entry.county.toLowerCase() === county.toLowerCase())?.county;
+  }
+
+  function unknownCounty(county: string) {
+    return {
+      error: `Unknown county "${county}". Choose a county from GET /counties.`,
+      code: "unknown_county",
+    };
+  }
+
   app.post("/run/start", async (request, reply) => {
     const parsed = RunRequestSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -174,8 +186,10 @@ export function buildServer(): FastifyInstance {
         details: parsed.error.issues.map((issue) => `${issue.path.join(".") || "body"}: ${issue.message}`),
       });
     }
+    const county = await canonicalCounty(parsed.data.county);
+    if (!county) return reply.code(400).send(unknownCounty(parsed.data.county));
     const traceId = randomUUID();
-    const job = runCase(parsed.data, traceId);
+    const job = runCase({ ...parsed.data, county }, traceId);
     liveRuns.set(traceId, job);
     job.catch(() => undefined);
     return { trace_id: traceId };
@@ -200,15 +214,9 @@ export function buildServer(): FastifyInstance {
         details: parsed.error.issues.map((issue) => `${issue.path.join(".") || "body"}: ${issue.message}`),
       });
     }
-    const listed = await listCounties();
-    const known = listed.counties.find((entry) => entry.county.toLowerCase() === parsed.data.county.toLowerCase());
-    if (!known) {
-      return reply.code(400).send({
-        error: `Unknown county "${parsed.data.county}". Choose a county from GET /counties.`,
-        code: "unknown_county",
-      });
-    }
-    const response = await runCase({ ...parsed.data, county: known.county });
+    const county = await canonicalCounty(parsed.data.county);
+    if (!county) return reply.code(400).send(unknownCounty(parsed.data.county));
+    const response = await runCase({ ...parsed.data, county });
     return reply.send(response);
   });
 

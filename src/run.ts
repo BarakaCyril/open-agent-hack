@@ -1,8 +1,10 @@
+import { warmZetaris } from "./adapters/zetaris.js";
 import { loadConfig } from "./config.js";
 import { buildServer } from "./server.js";
 
 const config = loadConfig();
 const app = buildServer();
+await warmZetaris();
 
 try {
   await app.listen({ port: config.PORT, host: "0.0.0.0" });

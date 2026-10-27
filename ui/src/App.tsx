@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   ShieldCheck, 
   Database, 
@@ -22,31 +22,18 @@ import {
   Sliders
 } from 'lucide-react';
 import { 
-  AreaChart, 
-  Area, 
-  BarChart, 
-  Bar, 
-  XAxis, 
-  YAxis, 
-  Tooltip, 
-  ResponsiveContainer, 
-  ReferenceLine 
-} from 'recharts';
-import { 
   api, 
+  formatTraceLine,
   ZetarisCheckResponse, 
   ProvidersResponse, 
   MeterlessTestResponse, 
   RunCaseResponse, 
   TraceEvent 
 } from './api';
+import { FarmerScreen } from './phone';
 
 export default function App() {
   const [lang, setLang] = useState<'en' | 'sw'>('en');
-  const [bags, setBags] = useState<number>(20);
-  const [offer, setOffer] = useState<number>(3400);
-  const [cashNeed, setCashNeed] = useState<number>(20000);
-  const [storage, setStorage] = useState<'open_bags' | 'crib' | 'hermetic'>('open_bags');
   const [county, setCounty] = useState<string>('Kirinyaga');
   const [deliberating, setDeliberating] = useState<boolean>(false);
   const [phoneTime, setPhoneTime] = useState<string>('12:45');
@@ -62,7 +49,6 @@ export default function App() {
   // Live Deliberation Results
   const [liveResponse, setLiveResponse] = useState<RunCaseResponse | null>(null);
   const [liveEvents, setLiveEvents] = useState<TraceEvent[]>([]);
-  const [apiError, setApiError] = useState<string | null>(null);
 
   // Modals / Drawers
   const [showZetarisModal, setShowZetarisModal] = useState<boolean>(false);
@@ -71,6 +57,7 @@ export default function App() {
   const [connectStatusMsg, setConnectStatusMsg] = useState<string | null>(null);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const traceLogRef = useRef<HTMLDivElement | null>(null);
 
   // 1. Phone Clock
   useEffect(() => {
@@ -82,6 +69,12 @@ export default function App() {
     const timer = setInterval(updateTime, 1000);
     return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    const log = traceLogRef.current;
+    if (!log) return;
+    log.scrollTop = log.scrollHeight;
+  }, [liveEvents]);
 
   // 2. Initial System Check (Zetaris, Meterless, Backend Health)
   const refreshSystemStatus = async () => {
@@ -233,106 +226,12 @@ export default function App() {
     return () => window.removeEventListener('mousemove', handleMouseMove);
   }, []);
 
-  // Translations
-  const t = {
-    en: {
-      profile: "Farmer Profile",
-      market: "County & Market",
-      bagsLabel: "White Maize Quantity",
-      storageLabel: "Storage Facility",
-      offerLabel: "Buyer Cash Offer (Per Bag)",
-      cashNeedLabel: "Immediate Cash Obligation",
-      runBtn: "Run Multi-Agent Deliberation",
-      verdictTag: "Official Recommendation",
-      estRevenue: "Estimated Cash Realized",
-      sellAction: "SELL NOW",
-      holdAction: "HOLD GRAIN",
-      recheckLabel: "Next Automated Recheck Schedule:",
-      rainWarn: "Notice: 193 mm rain expected over 7 days. Open storage risks 4.1 bags rotting.",
-      lossHigh: "Loss Risk: 20.4%",
-      lossMed: "Loss Risk: 8.2%",
-      lossLow: "Loss Risk: 0.5%",
-      deliberatingStatus: "Running Multi-Agent Deliberation..."
-    },
-    sw: {
-      profile: "Wasifu wa Mkulima",
-      market: "Kaunti na Soko",
-      bagsLabel: "Kiasi cha Mahindi Meupe",
-      storageLabel: "Aina ya Ghala",
-      offerLabel: "Ofa ya Mnunuzi (Kwa Gunia)",
-      cashNeedLabel: "Uhitaji wa Haraka wa Pesa",
-      runBtn: "Fanya Tathmini ya Wakala",
-      verdictTag: "Uamuzi Rasmi wa Ushauri",
-      estRevenue: "Pesa Zitakazopatikana",
-      sellAction: "UZA SASA",
-      holdAction: "HIFADHI MAHINDI",
-      recheckLabel: "Tarehe ya Uhakiki Ujao:",
-      rainWarn: "Tahadhari: Mvua ya 193 mm inatarajiwa ndani ya siku 7. Magunia 4.1 yanaweza kuoza.",
-      lossHigh: "Hatari ya Kuoza: 20.4%",
-      lossMed: "Hatari ya Kuoza: 8.2%",
-      lossLow: "Hatari ya Kuoza: 0.5%",
-      deliberatingStatus: "Wakala Wanashauriana Sasa..."
-    }
-  }[lang];
-
-  // Mathematical fallback calculations
-  const lossRate = storage === 'open_bags' ? 0.204 : storage === 'crib' ? 0.082 : 0.005;
-  const p50 = 3225;
-  const immediateRevenue = bags * offer;
-  const expectedHoldGross = bags * (1 - lossRate) * (p50 + 150);
-  const penaltyRate = 2.0;
-  const liquidityPenalty = cashNeed > 0 ? (cashNeed * penaltyRate) : 0;
-  const scoredHold = expectedHoldGross - liquidityPenalty;
-  const computedIsSell = immediateRevenue >= scoredHold;
-
-  // Active verdict logic (prefers live API response if present)
-  const isSell = liveResponse ? liveResponse.verdict === 'sell' : computedIsSell;
-  const finalRevenue = liveResponse && liveResponse.decision_values_kes 
-    ? (isSell ? liveResponse.decision_values_kes.sell : liveResponse.decision_values_kes.hold)
-    : (isSell ? immediateRevenue : expectedHoldGross);
-
-  // Trigger REAL Deliberation
-  const handleRunDeliberation = async () => {
-    setDeliberating(true);
-    setApiError(null);
-    setLiveEvents([]);
-
-    const payload = {
-      farmer_id: 'FK-001',
-      county,
-      bags,
-      storage,
-      offer_per_bag: offer,
-      cash_need: cashNeed,
-      mode: 'advise' as const,
-    };
-
-    try {
-      // 1. Call real backend POST /run
-      const res = await api.runCase(payload);
-      setLiveResponse(res);
-
-      // 2. Connect to SSE stream or fetch trace events for real proof
-      const closeStream = api.subscribeTraceEvents(
-        res.trace_id,
-        (event) => {
-          setLiveEvents((prev) => [...prev, event]);
-        },
-        () => {
-          // Stream completed
-        }
-      );
-
-      // Safety disconnect after 10s
-      setTimeout(closeStream, 10000);
-
-    } catch (err: any) {
-      console.warn('Real backend call failed or backend offline:', err);
-      setApiError(err?.message || 'Backend connection failed. Start with npm start on port 8000.');
-    } finally {
-      setDeliberating(false);
-    }
-  };
+  const onFarmerActivity = useCallback((activity: { running: boolean; response: RunCaseResponse | null; events: TraceEvent[]; county: string }) => {
+    setDeliberating(activity.running);
+    setLiveResponse(activity.response);
+    setLiveEvents(activity.events);
+    setCounty(activity.county);
+  }, []);
 
   // Auto-Detect Meterless
   const handleDetectMeterless = async () => {
@@ -359,27 +258,6 @@ export default function App() {
       setConnectStatusMsg(`Connection failed: ${e?.message}`);
     }
   };
-
-  // Monte Carlo & Forecast data
-  const monteCarloData = [
-    { value: 10000, hold: 4, sell: 0 },
-    { value: 20000, hold: 18, sell: 0 },
-    { value: 35000, hold: 55, sell: 0 },
-    { value: 51200, hold: 92, sell: isSell ? 100 : 0 },
-    { value: 68000, hold: 42, sell: 0 },
-    { value: 85000, hold: 12, sell: 0 },
-    { value: 100000, hold: 2, sell: 0 }
-  ];
-
-  const weatherForecast = [
-    { day: "Oct 25", rain: 14, label: "Day 1" },
-    { day: "Oct 26", rain: 28, label: "Day 2" },
-    { day: "Oct 27", rain: 42, label: "Day 3" },
-    { day: "Oct 28", rain: 55, label: "Day 4" },
-    { day: "Oct 29", rain: 31, label: "Day 5" },
-    { day: "Oct 30", rain: 15, label: "Day 6" },
-    { day: "Oct 31", rain: 8, label: "Day 7" }
-  ];
 
   // Zetaris tables summary
   const zetarisRowCount = zetarisData?.tables?.reduce((acc, t) => acc + (t.row_count || 0), 0) || 0;
@@ -531,195 +409,8 @@ export default function App() {
                 <span className="font-mono text-[10px] font-semibold text-slate-700">4G 100%</span>
               </div>
 
-              {/* Phone Inner Screen Content */}
-              <div className="flex-1 bg-slate-50 p-4 rounded-b-[38px] overflow-y-auto space-y-3.5 font-body">
-                
-                {/* Farmer Profile Pill */}
-                <div className="p-3 rounded-2xl bg-white border border-slate-200 shadow-sm flex items-center justify-between">
-                  <div>
-                    <div className="text-[10px] uppercase font-bold tracking-wider text-slate-400 font-body">
-                      {t.profile}
-                    </div>
-                    <div className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
-                      <span>J. Kariuki</span>
-                      <span className="text-[9px] px-1.5 py-0.2 bg-emerald-50 text-emerald-700 font-semibold rounded border border-emerald-200">
-                        Verified
-                      </span>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <div className="text-[10px] text-slate-400 font-body">{t.market}</div>
-                    <div className="text-xs font-bold text-slate-800">Kirinyaga (Ngurubani)</div>
-                  </div>
-                </div>
-
-                {/* FORM CONTROLS */}
-                <div className="space-y-3">
-                  
-                  {/* Quantity Slider */}
-                  <div className="p-3 rounded-2xl bg-white border border-slate-200 shadow-sm space-y-1.5">
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="text-slate-600 font-medium">{t.bagsLabel}</span>
-                      <span className="font-mono font-bold text-emerald-800 text-sm">
-                        {bags} Bags (90kg)
-                      </span>
-                    </div>
-                    <input 
-                      type="range" min="5" max="100" step="5" value={bags} 
-                      onChange={(e) => setBags(Number(e.target.value))} 
-                      className="w-full accent-emerald-700 h-1.5 bg-slate-200 rounded-lg cursor-pointer"
-                    />
-                    <div className="flex justify-between text-[10px] text-slate-400 font-mono">
-                      <span>5 bags</span>
-                      <span>Total: {(bags * 90).toLocaleString()} kg</span>
-                      <span>100 bags</span>
-                    </div>
-                  </div>
-
-                  {/* Storage Method */}
-                  <div className="p-3 rounded-2xl bg-white border border-slate-200 shadow-sm space-y-1.5">
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="text-slate-600 font-medium">{t.storageLabel}</span>
-                      <span className="text-[11px] font-bold text-amber-700">
-                        {storage === 'open_bags' ? t.lossHigh : storage === 'crib' ? t.lossMed : t.lossLow}
-                      </span>
-                    </div>
-                    <select 
-                      value={storage} 
-                      onChange={(e) => setStorage(e.target.value as any)} 
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 font-medium focus:outline-none focus:ring-1 focus:ring-emerald-700"
-                    >
-                      <option value="open_bags">Traditional Open Bags (Exposed to Damp)</option>
-                      <option value="crib">Traditional Crib (Ventilated Wooden Frame)</option>
-                      <option value="hermetic">Airtight Hermetic Bag (PICS / Zero Spoilage)</option>
-                    </select>
-                  </div>
-
-                  {/* Cash Offer Slider */}
-                  <div className="p-3 rounded-2xl bg-white border border-slate-200 shadow-sm space-y-1.5">
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="text-slate-600 font-medium">{t.offerLabel}</span>
-                      <span className="font-mono font-bold text-slate-900 text-sm">
-                        {offer.toLocaleString()} KES
-                      </span>
-                    </div>
-                    <input 
-                      type="range" min="2600" max="4200" step="50" value={offer} 
-                      onChange={(e) => setOffer(Number(e.target.value))} 
-                      className="w-full accent-emerald-700 h-1.5 bg-slate-200 rounded-lg cursor-pointer"
-                    />
-                    <div className="flex justify-between text-[10px] text-slate-400 font-mono">
-                      <span>2,600 KES</span>
-                      <span>Market Median: 3,225 KES</span>
-                      <span>4,200 KES</span>
-                    </div>
-                  </div>
-
-                  {/* Cash Need Slider */}
-                  <div className="p-3 rounded-2xl bg-white border border-slate-200 shadow-sm space-y-1.5">
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="text-slate-600 font-medium">{t.cashNeedLabel}</span>
-                      <span className="font-mono font-bold text-amber-700 text-sm">
-                        {cashNeed.toLocaleString()} KES
-                      </span>
-                    </div>
-                    <input 
-                      type="range" min="0" max="60000" step="5000" value={cashNeed} 
-                      onChange={(e) => setCashNeed(Number(e.target.value))} 
-                      className="w-full accent-amber-600 h-1.5 bg-slate-200 rounded-lg cursor-pointer"
-                    />
-                    <div className="flex justify-between text-[10px] text-slate-400 font-mono">
-                      <span>0 KES (No urgency)</span>
-                      <span>Urgent school fees/debt</span>
-                      <span>60,000 KES</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* RUN DELIBERATION MAGNETIC BUTTON */}
-                <button 
-                  onClick={handleRunDeliberation}
-                  disabled={deliberating}
-                  className="magnetic-btn w-full py-2.5 rounded-xl bg-emerald-800 hover:bg-emerald-900 text-white font-bold text-xs shadow-md shadow-emerald-900/10 flex items-center justify-center gap-2 transition disabled:opacity-75 cursor-pointer"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${deliberating ? 'animate-spin' : ''}`} />
-                  <span>{deliberating ? t.deliberatingStatus : t.runBtn}</span>
-                </button>
-
-                {/* DECISION VERDICT CARD */}
-                <div className="p-4 rounded-2xl bg-white border border-slate-200 shadow-md space-y-3">
-                  <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-                    <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400 font-mono">
-                      {t.verdictTag}
-                    </span>
-                    <div className="flex items-center gap-1.5">
-                      {liveResponse?.data_source && (
-                        <span className={`text-[9px] px-2 py-0.5 rounded font-mono font-semibold border ${
-                          liveResponse.data_source === 'zetaris' 
-                            ? 'bg-emerald-50 text-emerald-800 border-emerald-200' 
-                            : 'bg-amber-50 text-amber-800 border-amber-200'
-                        }`}>
-                          Source: {liveResponse.data_source.toUpperCase()}
-                        </span>
-                      )}
-                      <span className="text-[10px] font-semibold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-                        Confidence {liveResponse ? Math.round(liveResponse.confidence * 100) : 94}%
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="flex items-baseline justify-between">
-                    <div>
-                      <div className={`text-2xl font-extrabold tracking-tight ${isSell ? 'text-emerald-800' : 'text-indigo-800'}`}>
-                        {isSell ? t.sellAction : t.holdAction}
-                      </div>
-                      <div className="text-[11px] text-slate-500 font-body mt-0.5">
-                        {t.estRevenue}
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-xl font-bold font-mono text-slate-900">
-                        {Math.round(finalRevenue).toLocaleString()} KES
-                      </div>
-                      <div className="text-[10px] text-slate-400 font-mono">
-                        {isSell ? `(${bags} bags @ ${offer} KES)` : `Net of ${Math.round(lossRate * 100)}% risk`}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Dual Language Rationale */}
-                  <div className="p-3 rounded-xl bg-slate-50 text-[11px] text-slate-600 font-body leading-relaxed border border-slate-200/80">
-                    {liveResponse?.plain_reply ? (
-                      liveResponse.plain_reply
-                    ) : lang === 'sw' ? (
-                      isSell ? (
-                        `Kwa magunia ${bags} katika Kaunti ya Kirinyaga, uamuzi bora wa hesabu ni kuuza sasa kwa mapato ya ${immediateRevenue.toLocaleString()} KES. Kuhifadhi mahindi kunaleta hatari ya uharibifu wa ${lossRate * 100}% na hakukidhi hitaji lako la dharura la pesa la ${cashNeed.toLocaleString()} KES.`
-                      ) : (
-                        `Uamuzi bora ni kuhifadhi magunia ${bags} kwenye ghala salama. Unatarajiwa kupata takriban ${Math.round(expectedHoldGross).toLocaleString()} KES baada ya siku 7 kutokana na bei inayopanda.`
-                      )
-                    ) : (
-                      isSell ? (
-                        `For ${bags} bags in Kirinyaga, the higher computed value is sell at about ${immediateRevenue.toLocaleString()} KES. Holding grain in storage carries ${lossRate * 100}% spoilage risk and incurs an urgent cash penalty, yielding an inferior scored hold value of ${Math.round(scoredHold).toLocaleString()} KES.`
-                      ) : (
-                        `With airtight storage and low immediate cash urgency, holding your ${bags} bags yields a superior expected value of ${Math.round(expectedHoldGross).toLocaleString()} KES over a 7-day forecast.`
-                      )
-                    )}
-                  </div>
-
-                  {/* Weather Alert inside Phone */}
-                  <div className="flex items-start gap-2 p-2.5 rounded-xl bg-amber-50/80 border border-amber-200/80 text-[11px] text-amber-900">
-                    <CloudRain className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
-                    <div>{t.rainWarn}</div>
-                  </div>
-
-                  <div className="pt-1 flex items-center justify-between text-[10px] text-slate-400 font-mono border-t border-slate-100">
-                    <span>{t.recheckLabel}</span>
-                    <span className="font-semibold text-slate-700">
-                      {liveResponse?.recheck_schedule || '2026-10-27 (3 Days)'}
-                    </span>
-                  </div>
-                </div>
-
+              <div className="flex-1 bg-slate-50 p-4 rounded-b-[38px] overflow-y-auto font-body">
+                <FarmerScreen lang={lang} onActivity={onFarmerActivity} />
               </div>
             </div>
           </div>
@@ -737,12 +428,20 @@ export default function App() {
                   </h2>
                 </div>
                 <div className="flex items-center gap-2 text-xs">
-                  <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-mono text-[11px]">
-                    2 Deliberation Rounds
-                  </span>
-                  <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-800 font-semibold border border-emerald-200 text-[11px]">
-                    1 Revision Resolved
-                  </span>
+                  {liveEvents.length > 0 ? (
+                    <>
+                      <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-mono text-[11px]">
+                        {liveEvents.filter((event) => event.action === 'refresh').length} refreshes
+                      </span>
+                      <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-800 font-semibold border border-emerald-200 text-[11px]">
+                        {liveEvents.filter((event) => event.action === 'revise').length} revisions
+                      </span>
+                    </>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 font-mono text-[11px]">
+                      Trace idle
+                    </span>
+                  )}
                 </div>
               </div>
 
@@ -812,7 +511,7 @@ export default function App() {
               </div>
 
               <div className="text-xs text-slate-500 font-mono">
-                Trace ID: <span className="text-slate-800 font-semibold">{liveResponse?.trace_id?.slice(0, 13) || 'ee209bc6-3393'}</span>
+                Trace ID: <span className="text-slate-800 font-semibold">{(liveResponse?.trace_id ?? liveEvents[0]?.trace_id)?.slice(0, 13) || '—'}</span>
               </div>
             </div>
 
@@ -831,132 +530,40 @@ export default function App() {
                   <span className="text-[11px] font-mono text-slate-500">Fastify /run/:traceId/events</span>
                 </div>
 
-                <div className="space-y-2.5 font-mono text-xs max-h-[380px] overflow-y-auto">
+                <div ref={traceLogRef} className="space-y-1 font-mono text-[11px] leading-relaxed max-h-[380px] overflow-y-auto rounded-xl bg-slate-950 text-slate-100 p-3">
                   {liveEvents.length > 0 ? (
                     liveEvents.map((evt, idx) => (
-                      <div key={idx} className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-start justify-between">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-emerald-800 font-bold">
-                              {evt.agent_name} {'->'} {evt.target_agent || 'Coordinator'}
-                            </span>
-                            <span className={`text-[10px] px-1.5 py-0.2 rounded font-semibold ${
-                              evt.status === 'success' ? 'bg-emerald-100 text-emerald-800' :
-                              evt.status === 'needs_revision' ? 'bg-amber-100 text-amber-800' :
-                              'bg-slate-200 text-slate-700'
-                            }`}>
-                              {evt.status.toUpperCase()}
-                            </span>
-                          </div>
-                          <p className="text-[11px] text-slate-600 font-body mt-1">
-                            {evt.output_summary || evt.action}
-                          </p>
-                        </div>
-                        <span className="text-[10px] text-slate-400">
-                          {evt.timestamp ? new Date(evt.timestamp).toTimeString().substring(0, 8) : ''}
-                        </span>
+                      <div key={`${evt.timestamp}-${evt.action}-${idx}`} className={
+                        evt.status === 'needs_revision' || evt.status === 'retrying' ? 'text-amber-300' :
+                        evt.status === 'error' ? 'text-red-300' :
+                        evt.status === 'fallback' ? 'text-amber-200' :
+                        'text-slate-100'
+                      }>
+                        {formatTraceLine(evt)}
                       </div>
                     ))
                   ) : (
-                    // Default view if no deliberation run yet
-                    <>
-                      <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-start justify-between">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-emerald-700 font-bold">Planner {'->'} MarketAnalyst</span>
-                            <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800">SUCCESS</span>
-                          </div>
-                          <p className="text-[11px] text-slate-600 font-body mt-1">
-                            Dispatching price query for Kirinyaga County white maize across Zetaris federated records.
-                          </p>
-                        </div>
-                        <span className="text-[10px] text-slate-400">12:35:01</span>
-                      </div>
-
-                      <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-start justify-between">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-emerald-700 font-bold">StorageWeatherAnalyst {'->'} RiskCritic</span>
-                            <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-100 text-amber-800">NEEDS_REVISION</span>
-                          </div>
-                          <p className="text-[11px] text-slate-600 font-body mt-1">
-                            Open storage dampness risk 20.4% contradicts initial Hold recommendation under 193 mm rainfall.
-                          </p>
-                        </div>
-                        <span className="text-[10px] text-slate-400">12:35:02</span>
-                      </div>
-
-                      <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-start justify-between">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-emerald-700 font-bold">RiskCritic {'->'} Planner</span>
-                            <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800">REVISION_RESOLVED</span>
-                          </div>
-                          <p className="text-[11px] text-slate-600 font-body mt-1">
-                            Hold rejected due to urgent 20,000 KES liquidity obligation and spoilage risk. Sell recommendation finalized.
-                          </p>
-                        </div>
-                        <span className="text-[10px] text-slate-400">12:35:03</span>
-                      </div>
-                    </>
+                    <p className="text-slate-400">
+                      {deliberating
+                        ? 'Waiting for the first trace line…'
+                        : 'Run a case. Each line here is the same line the server prints.'}
+                    </p>
                   )}
                 </div>
               </div>
             )}
 
-            {/* TAB CONTENT: MONTE CARLO & WEATHER CHARTS */}
             {activeAgentTab === 'charts' && (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                
-                {/* Monte Carlo Probability Curve */}
-                <div className="saas-card rounded-2xl p-4 flex flex-col">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs font-bold text-slate-800">Monte Carlo Valuation (KES)</span>
-                    <span className="text-[10px] text-emerald-800 font-mono font-semibold">1,000 Runs</span>
-                  </div>
-                  <div className="h-44 w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart data={monteCarloData}>
-                        <XAxis dataKey="value" tick={{ fontSize: 9 }} tickFormatter={(v) => `${v / 1000}k`} />
-                        <YAxis tick={{ fontSize: 9 }} />
-                        <Tooltip 
-                          formatter={(val: any) => [`${val} runs`, 'Simulations']}
-                          labelFormatter={(l: any) => `Valuation: ${Number(l).toLocaleString()} KES`}
-                        />
-                        <Area type="monotone" dataKey="hold" stroke="#15803D" fill="#DCFCE7" fillOpacity={0.7} />
-                        <ReferenceLine x={immediateRevenue} stroke="#B45309" strokeDasharray="3 3" label={{ value: 'Offer', fontSize: 9, fill: '#B45309' }} />
-                      </AreaChart>
-                    </ResponsiveContainer>
-                  </div>
-                  <div className="flex items-center justify-between text-[10px] text-slate-500 font-body mt-2 pt-2 border-t border-slate-100">
-                    <span>Median Expected: 51,200 KES</span>
-                    <span className="text-amber-800 font-semibold">Offer Line: {immediateRevenue.toLocaleString()} KES</span>
-                  </div>
-                </div>
-
-                {/* 7-Day Rainfall Forecast */}
-                <div className="saas-card rounded-2xl p-4 flex flex-col">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs font-bold text-slate-800">7-Day Rainfall Forecast (mm)</span>
-                    <span className="text-[10px] text-amber-700 font-mono font-semibold">Open-Meteo API</span>
-                  </div>
-                  <div className="h-44 w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={weatherForecast}>
-                        <XAxis dataKey="day" tick={{ fontSize: 9 }} />
-                        <YAxis tick={{ fontSize: 9 }} />
-                        <Tooltip formatter={(val: any) => [`${val} mm`, 'Rainfall']} />
-                        <Bar dataKey="rain" fill="#0284C7" radius={[4, 4, 0, 0]} />
-                        <ReferenceLine y={40} stroke="#EF4444" strokeDasharray="3 3" label={{ value: 'Danger', fontSize: 9, fill: '#EF4444' }} />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                  <div className="flex items-center justify-between text-[10px] text-slate-500 font-body mt-2 pt-2 border-t border-slate-100">
-                    <span>Cumulative Rain: 193 mm</span>
-                    <span className="text-red-700 font-semibold">Spoilage Danger: Day 3-5</span>
-                  </div>
-                </div>
-
+              <div className="saas-card rounded-2xl p-4 text-sm text-slate-700 space-y-2">
+                <p className="font-semibold text-slate-900">Price band from the last response</p>
+                <p className="font-mono text-xs">
+                  P10 {liveResponse?.price_range_per_90kg_bag ? Math.round(liveResponse.price_range_per_90kg_bag.p10).toLocaleString() : '—'}
+                  {' · '}
+                  P50 {liveResponse?.price_range_per_90kg_bag ? Math.round(liveResponse.price_range_per_90kg_bag.p50).toLocaleString() : '—'}
+                  {' · '}
+                  P90 {liveResponse?.price_range_per_90kg_bag ? Math.round(liveResponse.price_range_per_90kg_bag.p90).toLocaleString() : '—'}
+                </p>
+                <p className="text-xs text-slate-500">Loss risk: —</p>
               </div>
             )}
 
@@ -977,35 +584,13 @@ export default function App() {
                   </span>
                 </div>
 
+                <p className="text-xs text-slate-500">This is the cross-source statement the planner sends. It is not a measured result.</p>
                 <div className="p-3.5 rounded-xl bg-slate-900 text-slate-100 font-mono text-xs overflow-x-auto leading-relaxed">
-                  <div className="text-slate-400">-- Federated cross-source query executed via Zetaris Spark Engine</div>
-                  <div className="text-emerald-400">SELECT</div>
-                  <div className="pl-4">
-                    p.market_date, p.county, p.market, p.price_kes,
-                    b.buyer_notes, b.liquidity_status
-                  </div>
-                  <div className="text-emerald-400">FROM</div>
-                  <div className="pl-4">
-                    maize.kamis_prices p
-                  </div>
-                  <div className="text-emerald-400">JOIN</div>
-                  <div className="pl-4">
-                    maize.market_news b ON p.county = b.county
-                  </div>
-                  <div className="text-emerald-400">WHERE</div>
-                  <div className="pl-4">
-                    p.county = <span className="text-amber-300">'{county}'</span>
-                    AND p.market_date &gt;= <span className="text-amber-300">'2026-10-12'</span>
-                  </div>
-                  <div className="text-emerald-400">ORDER BY</div>
-                  <div className="pl-4">p.market_date DESC LIMIT 10;</div>
-                </div>
-
-                <div className="flex items-center justify-between text-xs text-slate-500 pt-1 font-body">
-                  <span>Engine: Zetaris JDBC API (Port 3000)</span>
-                  <span className="font-mono text-emerald-800 font-semibold">
-                    {isZetarisOnline ? 'Execution Latency: 38ms' : 'Status: Sample Fallback'}
-                  </span>
+                  <div>SELECT county, latest_market_date, quote_count, forecast_date,</div>
+                  <div className="pl-4">precipitation_sum, temperature_2m_mean, humidity_pct,</div>
+                  <div className="pl-4">storage, daily_loss_pct, rules_synthetic</div>
+                  <div>FROM maize.county_case</div>
+                  <div>WHERE county = '{county}'</div>
                 </div>
               </div>
             )}
@@ -1018,10 +603,10 @@ export default function App() {
               </div>
               <div className="flex flex-wrap items-center gap-3 text-[11px] font-mono">
                 <span className={`px-2 py-0.5 rounded border ${isZetarisOnline ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-slate-100 text-slate-700 border-slate-200'}`}>
-                  Zetaris: {isZetarisOnline ? 'Live Spark SQL (51 Rows)' : 'Adapter Ready (Port 3000)'}
+                  Zetaris: {isZetarisOnline ? `online · ${zetarisRowCount} rows` : 'offline'}
                 </span>
                 <span className={`px-2 py-0.5 rounded border ${meterlessHealth?.status === 'online' ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-slate-100 text-slate-700 border-slate-200'}`}>
-                  Reasoning: {meterlessHealth?.status === 'online' ? 'Meterless Runtime' : 'NVIDIA Nemotron 30B'}
+                  Reasoning: {liveResponse ? `${liveResponse.provider} · ${liveResponse.model}` : (providersData?.primary ?? '—')}
                 </span>
                 <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
                   Cursor IDE Built

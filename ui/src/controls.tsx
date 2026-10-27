@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export function groupDigits(value: number): string {
   return String(Math.trunc(value)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
@@ -28,6 +28,8 @@ export function IntegerControl(props: {
 }) {
   const [text, setText] = useState(groupDigits(props.value));
   const [focused, setFocused] = useState(false);
+  const validityRef = useRef(props.onValidity);
+  validityRef.current = props.onValidity;
   const parsed = parseWhole(text);
   const rangeError = parsed === null
     ? "Enter a whole number. No decimals or negatives."
@@ -42,8 +44,8 @@ export function IntegerControl(props: {
   }, [focused, props.value]);
 
   useEffect(() => {
-    props.onValidity?.(rangeError === null);
-  }, [rangeError, props.onValidity]);
+    validityRef.current?.(rangeError === null);
+  }, [rangeError]);
 
   const commit = (next: number) => {
     const capped = props.hardMax === undefined ? next : Math.min(props.hardMax, next);

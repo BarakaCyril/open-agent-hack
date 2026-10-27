@@ -27,7 +27,7 @@ Third-party and open source:
 - Open-Meteo, CC BY 4.0, https://open-meteo.com/
 - OpenStreetMap contributors, ODbL, for `data/counties.csv`
 - KAMIS prices, Ministry of Agriculture, https://kamis.kilimo.go.ke/site/market. Terms of use are unconfirmed.
-- npm dependencies in `package.json`: fastify, zod; devDependencies @types/node, tsx, typescript, vitest.
+- npm dependencies in `package.json`: fastify, pg, zod; devDependencies @types/node, @types/pg, tsx, typescript, vitest.
 - npm dependencies in `ui/package.json`: clsx, lucide-react, react, react-dom, recharts, tailwind-merge; devDependencies @types/react, @types/react-dom, @vitejs/plugin-react, autoprefixer, postcss, tailwindcss, typescript, vite.
 
 Synthetic, and labelled synthetic in the files:

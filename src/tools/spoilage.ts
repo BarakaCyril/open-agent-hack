@@ -20,6 +20,22 @@ export interface LossEstimate {
   totalRainMm: number;
 }
 
+/**
+ * Heavy rain is one forecast day at or above the highest rain_mm_min for that storage type.
+ * Open bags: 0 mm is the dry day (0.35% a day), 5 mm is light rain (1.1%), and 20 mm is heavy rain (3.2%).
+ * The lowest rain_mm_min is 0, which matches every day, so it is not the heavy-rain test.
+ * The heavy-rain threshold is 20 mm in a single day. The 7-day total is not compared to it.
+ * Returns null when every row for the storage type shares one rain_mm_min (hermetic is only 0).
+ */
+export function heavyRainMmMin(storage: string, rules: StorageRule[]): number | null {
+  const mins = rules.filter((rule) => rule.storage === storage).map((rule) => rule.rain_mm_min);
+  if (mins.length === 0) return null;
+  const lowest = Math.min(...mins);
+  const highest = Math.max(...mins);
+  if (highest <= lowest) return null;
+  return highest;
+}
+
 export function matchRule(storage: string, day: ForecastDay, rules: StorageRule[]): StorageRule | null {
   const candidates = rules.filter(
     (rule) => rule.storage === storage && day.rain_mm >= rule.rain_mm_min && day.humidity_pct >= rule.humidity_min,

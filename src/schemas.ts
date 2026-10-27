@@ -121,6 +121,8 @@ export const CaseStateSchema = z.object({
   synthetic_inputs: z.array(z.string()),
   narrative_fallback: z.boolean(),
   refresh_limits: z.array(z.string()),
+  caveats: z.array(z.string()),
+  rejected_signature: z.string().nullable(),
 });
 
 export type CaseState = z.infer<typeof CaseStateSchema>;

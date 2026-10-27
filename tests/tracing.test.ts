@@ -221,6 +221,14 @@ describe("model wording guard", () => {
     expect(mismatchedNumbers("The price is 3,200 KES for 20 bags.", "The price is 3,200 KES for 20 bags.")).toEqual([]);
     expect(mismatchedNumbers("About 18 percent.", "About 18.0 percent.")).toEqual([]);
     expect(mismatchedNumbers("The price is 9,999 KES for 20 bags.", "The price is 3,200 KES for 20 bags.")).toEqual([9999]);
+    expect(mismatchedNumbers(
+      "The offer is 800 KES below the P50.",
+      "P50 4,200 and offer 3,400.",
+    )).toEqual([]);
+    expect(mismatchedNumbers(
+      "800 KES above the offer.",
+      "The offer of 3,400 KES is -800 KES against the P50 of 4,200.",
+    )).toEqual([]);
     expect(limitToTwoPlainSentences("Alpha. Beta. Gamma.")).toBe("Alpha. Beta.");
     expect(limitToTwoPlainSentences("**Alpha.** Beta.")).toBe("Alpha. Beta.");
     expect(limitToTwoPlainSentences("Only one sentence")).toBe("Only one sentence.");

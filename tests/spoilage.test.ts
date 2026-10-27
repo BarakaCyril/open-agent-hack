@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { loadRules } from "../src/adapters/sampleData.js";
-import { expectedLoss, type ForecastDay, type StorageRule } from "../src/tools/spoilage.js";
+import { expectedLoss, heavyRainMmMin, type ForecastDay, type StorageRule } from "../src/tools/spoilage.js";
 
 const oneDay: ForecastDay[] = [{ date: "2026-10-22", rain_mm: 1, humidity_pct: 50 }];
 const wetWeek: ForecastDay[] = Array.from({ length: 7 }, (_, index) => ({
@@ -31,6 +31,12 @@ describe("expected loss", () => {
     expect(dryLoss.mean).toBeLessThan(0.03);
     expect(openLoss.mean).toBeGreaterThan(dryLoss.mean);
     expect(openLoss.totalRainMm).toBe(175);
+  });
+
+  it("treats 20 mm in one day as heavy rain for open bags", () => {
+    const rules = loadRules();
+    expect(heavyRainMmMin("open_bags", rules)).toBe(20);
+    expect(heavyRainMmMin("hermetic", rules)).toBeNull();
   });
 
   it("refuses an empty forecast or an unknown store", () => {
